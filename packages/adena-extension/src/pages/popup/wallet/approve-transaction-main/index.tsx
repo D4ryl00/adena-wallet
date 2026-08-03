@@ -234,10 +234,22 @@ const ApproveTransactionContainer: React.FC = () => {
   const signingAccountMissingMessage = signingAccountMissing
     ? 'Requested signing account was not found.'
     : null;
+  // A request naming a network other than the active one used to leave this
+  // screen spinning forever: the document is never built, so `transactionData`
+  // stayed undefined and the spinner never resolved. Say what is wrong instead.
+  // In-page GnoConnect requests no longer reach here mismatched — the provider
+  // resolves the network, prompting a switch, before anything is built — but a
+  // direct `window.adena` caller can still pass a `networkInfo` of its own.
+  const requestedNetworkMismatchMessage = !isRequestedNetworkReady
+    ? `This request is for ${
+        requestData?.data?.networkInfo?.chainId ?? 'another network'
+      }. Switch networks in Adena to continue.`
+    : null;
   const approvalBlocked =
     isSessionAdminNetworkUnsupported ||
     isSessionAdminSigningAccountUnsupported ||
-    signingAccountMissing;
+    signingAccountMissing ||
+    !isRequestedNetworkReady;
 
   const hasMemo = useMemo(() => {
     if (!requestData?.data?.memo) {
@@ -915,7 +927,9 @@ const ApproveTransactionContainer: React.FC = () => {
       contracts={transactionData?.contracts || []}
       memo={memo}
       hasMemo={hasMemo}
-      loading={transactionData === undefined || !isRequestedNetworkReady}
+      // Only genuinely loading while the document is still being built. A
+      // network mismatch never resolves, so it is a banner, not a spinner.
+      loading={isRequestedNetworkReady && transactionData === undefined}
       processing={false}
       done={false}
       logo={favicon}
@@ -942,6 +956,7 @@ const ApproveTransactionContainer: React.FC = () => {
       onFinishHold={handleFinishHold}
       simulateErrorBannerMessage={parsedSimulateErrors.globalErrorMessage}
       sessionGuardBannerMessage={
+        requestedNetworkMismatchMessage ||
         sessionAdminNetworkUnsupportedMessage ||
         signingAccountMissingMessage ||
         sessionAdminSigningAccountUnsupportedMessage

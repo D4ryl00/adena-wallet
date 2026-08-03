@@ -13,6 +13,7 @@ import {
   decodeCosmosKey,
 } from './inject/cosmos/offline-signer';
 import { AdenaExecutor } from './inject/executor/executor';
+import { announceGnoWallet } from './inject/gnoconnect/announce';
 import {
   AddEstablishResponse,
   AddNetworkParams,
@@ -241,3 +242,8 @@ const init = (): void => {
 };
 
 init();
+
+// GnoConnect in-page discovery. Announced alongside `window.adena` rather than
+// instead of it: existing dApps keep the global, GnoConnect pages get a wallet
+// they can choose explicitly even with another wallet installed.
+announceGnoWallet();

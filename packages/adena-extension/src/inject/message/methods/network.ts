@@ -50,6 +50,13 @@ export const addNetwork = async (
       );
       return;
     }
+    // A request-initiated add must not create an endpoint for a chain the user
+    // already configured: if the chain is known, the user has made this choice
+    // and the request has nothing to propose. Otherwise a page could install a
+    // second endpoint for, say, gno.land and then have `chainid` resolve to it.
+    // Adding a further endpoint themselves — for a node their ISP blocks, or one
+    // that is temporarily unreachable — stays open to the user in settings,
+    // which is a different path (`chainService.addGnoNetwork`).
     const networks = await core.chainService.getNetworks();
     const existNetwork =
       networks.findIndex(

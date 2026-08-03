@@ -1,9 +1,8 @@
 import { EVENT_KEYS } from '@common/constants/event-key.constant';
 import { EventMessageData } from '@inject/message';
-import { CommandHandler } from '@inject/message/command-handler';
 import { CommandMessageData } from '@inject/message/command-message';
-import { GnoInterceptorManager } from '@inject/message/methods/gno-interceptor-manager';
 import { GnoSessionUpdateMessage } from '@inject/message/methods/gno-session';
+import { GnoWebEventWatcherInterceptor } from '@inject/message/methods/interceptors';
 
 const loadScript = (): void => {
   const container = document.head || document.documentElement;
@@ -47,12 +46,6 @@ const initExtensionListener = (): void => {
 
         window.dispatchEvent(changedAccountEvent);
         sendResponse({ received: true });
-        return;
-      }
-
-      if (message.status === 'command') {
-        const result = CommandHandler.createContentHandler(message);
-        sendResponse({ received: true, result });
         return;
       }
 
@@ -103,15 +96,30 @@ const sendMessage = async (event: MessageEvent): Promise<void> => {
 };
 
 /**
- * Initialize GNO interceptors
- * Uses GnoInterceptorManager to register anchor, form submit, and event watcher interceptors
+ * Subscribes to gnoweb's own custom events (`params:changed`, `mode:changed`,
+ * `address:changed`) to keep the wallet's gno session in sync with what the user
+ * is editing on the page.
+ *
+ * This observes; it does not intercept. GnoConnect forbids a wallet from
+ * cancelling the page's clicks and submits to sign on the user's behalf — that
+ * makes the choice invisibly and binds the wallet to one site's DOM — so the
+ * anchor and form-submit interceptors are gone. Listening to events the page
+ * deliberately dispatches, and cancelling nothing, is not that: the page stays in
+ * control of its own submit, and signing still begins with an explicit call to
+ * the announced provider.
  */
-const initGnoInterceptors = (): void => {
-  const manager = GnoInterceptorManager.getInstance();
-
-  manager.initialize((message: GnoSessionUpdateMessage) => {
+const initGnoWebEventWatcher = (): void => {
+  const watcher = new GnoWebEventWatcherInterceptor((message: GnoSessionUpdateMessage) => {
     sendGnoSessionUpdate(message);
   });
+
+  try {
+    if (watcher.shouldRegister()) {
+      watcher.register();
+    }
+  } catch (error) {
+    console.warn('Failed to register GnoWeb event watcher:', error);
+  }
 };
 
 /**
@@ -137,7 +145,7 @@ const sendGnoSessionUpdate = async (message: GnoSessionUpdateMessage): Promise<v
   }
 };
 
-initGnoInterceptors();
+initGnoWebEventWatcher();
 loadScript();
 initListener();
 initExtensionListener();

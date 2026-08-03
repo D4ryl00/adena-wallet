@@ -3,11 +3,7 @@ import { TransactionEventStore } from '@common/event-store';
 import { MemoryProvider } from '@common/provider/memory/memory-provider';
 import { AUTO_LOCK_TRIGGERED_MESSAGE } from '@common/utils/auto-lock-timer';
 import { CommandHandler } from '@inject/message/command-handler';
-import {
-  CommandMessage,
-  CommandMessageData,
-  isCommandMessageData,
-} from '@inject/message/command-message';
+import { CommandMessageData, isCommandMessageData } from '@inject/message/command-message';
 import { clearInMemoryKey } from '@inject/message/commands/encrypt';
 import {
   GnoSessionState,
@@ -333,35 +329,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 
   return true;
-});
-
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
-  if (changeInfo.status === 'complete') {
-    try {
-      const tab = await chrome.tabs.get(tabId).catch(() => null);
-      if (
-        !tab?.url ||
-        tab.url.startsWith('chrome://') ||
-        tab.url.startsWith('chrome-extension://') ||
-        tab.url.startsWith('moz-extension://') ||
-        tab.url.startsWith('about:')
-      ) {
-        return;
-      }
-
-      chrome.tabs
-        .sendMessage(
-          tabId,
-          CommandMessage.command('checkMetadata', {
-            gnoMessageInfo: null,
-            gnoConnectInfo: null,
-          }),
-        )
-        .catch(() => undefined);
-    } catch {
-      // Tab may have been closed
-    }
-  }
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

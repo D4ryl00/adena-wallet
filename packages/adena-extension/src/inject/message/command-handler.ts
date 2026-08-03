@@ -1,12 +1,6 @@
-import { WalletResponseFailureType, WalletResponseSuccessType } from '@adena-wallet/sdk';
-import { DEFAULT_GAS_WANTED } from '@common/constants/tx.constant';
-import { GnoDocumentInfo } from '@common/provider/gno';
-import { isInterRealmParameter } from '@common/provider/gno/utils';
 import { MemoryProvider } from '@common/provider/memory/memory-provider';
 import { clearAutoLockAlarm, resetAutoLockAlarm } from '@common/utils/auto-lock-timer';
-import { AdenaExecutor } from '@inject/executor';
-import { ContractMessage, TransactionParams } from '@inject/types';
-import { CheckMetadataMessageData, CommandMessageData } from './command-message';
+import { CommandMessageData } from './command-message';
 import {
   clearInMemoryKey,
   decryptPassword,
@@ -14,18 +8,6 @@ import {
   getInMemoryKey,
 } from './commands/encrypt';
 import { clearPopup } from './commands/popup';
-import {
-  canHandleGnoConnectOrigin,
-  getLoopbackGnoConnectChainId,
-  getLoopbackGnoConnectRejection,
-  GnoArgumentInfo,
-  GnoConnectInfo,
-  GnoMessageInfo,
-  parseGnoConnectInfo,
-  parseGnoMessageInfo,
-} from './methods/gno-connect';
-import { describeLoopbackRejection, showGnoConnectNotice } from './methods/gno-connect-notice';
-import type { FetchRealmDocumentMessage } from './methods/gno-realm-document';
 
 export class CommandHandler {
   public static createHandler = async (
@@ -125,147 +107,6 @@ export class CommandHandler {
       respond(makeInternalErrorResponse(message));
     }
   };
-
-  public static createContentHandler = async (
-    message: CommandMessageData<CheckMetadataMessageData>,
-  ): Promise<void> => {
-    if (message.code !== 0 || message.command !== 'checkMetadata' || !message.data) {
-      return;
-    }
-
-    const currentUrl = window?.location?.href || '';
-    const currentOrigin = window?.location?.origin || '';
-
-    // Remote (https) gno origins are trusted statically. Loopback origins (local
-    // dev nodes) are trusted only after the runtime gate below confirms the
-    // wallet's active network is the one that declares this origin.
-    const loopbackChainId = getLoopbackGnoConnectChainId(currentOrigin);
-    const isLoopbackOrigin = loopbackChainId !== null;
-    // Same helper the interceptors consult before swallowing a click/submit, so
-    // "we handle this origin" has exactly one definition.
-    if (!canHandleGnoConnectOrigin(currentOrigin)) {
-      return;
-    }
-
-    const gnoMessageInfo = message.data.gnoMessageInfo || parseGnoMessageInfo(currentUrl);
-    const gnoConnectInfo = message.data.gnoConnectInfo || parseGnoConnectInfo();
-
-    if (gnoMessageInfo === null || gnoConnectInfo === null) {
-      return;
-    }
-
-    const executor = new AdenaExecutor();
-
-    const domain = new URL(window.location.href).hostname;
-    const addEstablishResponse = await executor.addEstablish(domain);
-    // Not connected
-    if (
-      addEstablishResponse.type !== WalletResponseSuccessType.CONNECTION_SUCCESS &&
-      addEstablishResponse.type !== WalletResponseFailureType.ALREADY_CONNECTED
-    ) {
-      console.info('response: ', addEstablishResponse);
-      return;
-    }
-
-    // Runtime trust gate for loopback origins: only honor a local node's
-    // gnoconnect declarations when the meta-declared chainId matches the one the
-    // origin is permitted to act as AND that chainId is the wallet's active network.
-    // This prevents an arbitrary process holding the local port from
-    // switching the wallet to a foreign network or driving the flow while the
-    // user is on another network.
-    if (isLoopbackOrigin) {
-      const networkResponse = await executor.getNetwork();
-      const isNetworkKnown =
-        networkResponse.type === WalletResponseSuccessType.GET_NETWORK_SUCCESS;
-      const activeChainId = isNetworkKnown ? networkResponse.data?.chainId : undefined;
-
-      // The gate is unchanged; only its silence is. A rejection used to end here
-      // as a bare console.info, which is easy to miss in the page's console and
-      // leaves the user with a link that does nothing and no way to tell whether
-      // their wallet is locked, on another network, or too old to support
-      // loopback TxLinks at all.
-      const rejection = getLoopbackGnoConnectRejection(
-        loopbackChainId,
-        gnoConnectInfo.chainId,
-        activeChainId,
-      );
-
-      if (rejection !== null) {
-        const notice = describeLoopbackRejection(rejection, {
-          requiredChainId: loopbackChainId,
-          metaChainId: gnoConnectInfo.chainId,
-          activeChainId,
-          activeNetworkName: isNetworkKnown ? networkResponse.data?.networkName : undefined,
-        });
-
-        console.warn(`[Adena] ${notice.title}: ${notice.body} (${rejection})`);
-        showGnoConnectNotice(notice);
-        return;
-      }
-    }
-
-    const switchNetworkResponse = await executor.switchNetwork(gnoConnectInfo.chainId);
-    if (
-      switchNetworkResponse.type !== WalletResponseSuccessType.SWITCH_NETWORK_SUCCESS &&
-      switchNetworkResponse.type !== WalletResponseFailureType.REDUNDANT_CHANGE_REQUEST &&
-      switchNetworkResponse.type !== WalletResponseFailureType.UNADDED_NETWORK
-    ) {
-      console.info('response: ', switchNetworkResponse);
-      return;
-    }
-
-    const realmDocument = await fetchRealmDocument({
-      rpc: gnoConnectInfo.rpc,
-      chainId: gnoConnectInfo.chainId,
-      packagePath: gnoMessageInfo.packagePath,
-    });
-    if (!realmDocument) {
-      console.info('Realm document not found');
-      return;
-    }
-
-    try {
-      // Make TransactionParams
-      const transactionParams = makeTransactionMessage(
-        gnoMessageInfo,
-        gnoConnectInfo,
-        realmDocument,
-      );
-
-      executor.doContract(transactionParams).then(console.info).catch(console.info);
-    } catch (error) {
-      console.info(error);
-    }
-  };
-}
-
-/**
- * Ask the background for the realm document. Content scripts must not fetch the
- * RPC endpoint directly: Firefox runs them under an expanded principal, so their
- * requests are subject to the page's CSP as well, and gnoweb pages ship a
- * restrictive `connect-src` that excludes the RPC host - which silently killed
- * TxLinks there. The background performs the request instead (extension CSP:
- * `connect-src https: ...`).
- */
-function fetchRealmDocument(params: {
-  rpc: string;
-  chainId: string;
-  packagePath: string;
-}): Promise<GnoDocumentInfo | null> {
-  return new Promise((resolve) => {
-    const message: FetchRealmDocumentMessage = { type: 'FETCH_REALM_DOCUMENT', data: params };
-    chrome.runtime.sendMessage(
-      message,
-      (response?: { document?: GnoDocumentInfo | null } | null) => {
-        if (chrome.runtime.lastError) {
-          console.info(chrome.runtime.lastError.message);
-          resolve(null);
-          return;
-        }
-        resolve(response?.document ?? null);
-      },
-    );
-  });
 }
 
 function makeSuccessResponse(message: CommandMessageData, data: any = null): CommandMessageData {
@@ -280,60 +121,5 @@ function makeInternalErrorResponse(message: CommandMessageData): CommandMessageD
   return {
     ...message,
     code: 500,
-  };
-}
-
-function makeTransactionMessage(
-  gnoMessageInfo: GnoMessageInfo,
-  gnoConnectInfo: GnoConnectInfo,
-  realmDocument: GnoDocumentInfo,
-): TransactionParams & { gasFee: number; gasWanted: number } {
-  const func = realmDocument.funcs.find((f) => f.name === gnoMessageInfo.functionName);
-  if (!func) {
-    throw new Error(`Function not found: ${gnoMessageInfo.functionName}`);
-  }
-
-  const gnoArguments: GnoArgumentInfo[] = func.params
-    .filter((param) => !isInterRealmParameter(param.name, param.type))
-    .map((param, index) => {
-      const messageArguments = gnoMessageInfo.args || [];
-      const arg = messageArguments.find((arg) => arg.key === param.name);
-      const value = arg?.value || '';
-
-      return {
-        index,
-        key: param.name,
-        value,
-        type: param.type,
-      };
-    });
-
-  const messageArguments = gnoArguments.map((arg) => {
-    return arg.value;
-  });
-
-  const messages: ContractMessage[] = [
-    {
-      type: '/vm.m_call',
-      value: {
-        caller: '',
-        send: gnoMessageInfo.send,
-        pkg_path: gnoMessageInfo.packagePath,
-        func: gnoMessageInfo.functionName,
-        args: messageArguments,
-        max_deposit: gnoMessageInfo.maxDeposit,
-      },
-    },
-  ];
-
-  return {
-    messages,
-    gasFee: 0,
-    gasWanted: DEFAULT_GAS_WANTED,
-    networkInfo: {
-      chainId: gnoConnectInfo.chainId,
-      rpcUrl: gnoConnectInfo.rpc,
-    },
-    arguments: gnoArguments,
   };
 }

@@ -123,13 +123,16 @@ const INTENT = {
 };
 
 /**
- * Wraps a reply so every request first sees the wallet's active network, which
- * is what `resolveNetwork` reads before anything is built or signed.
+ * Wraps a reply with the two things every signing request does before anything
+ * is built: establish the origin, then read the wallet's active network.
  */
-function onActiveNetwork(
+function onConnectedWallet(
   reply: (request: any) => Record<string, unknown>,
 ): (request: any) => Record<string, unknown> {
   return (request): Record<string, unknown> => {
+    if (request.type === 'ADD_ESTABLISH') {
+      return { status: 'success', type: 'CONNECTION_SUCCESS', data: {} };
+    }
     if (request.type === 'GET_NETWORK') {
       return {
         status: 'success',
@@ -164,7 +167,7 @@ describe('GnoConnect handshake, end to end', () => {
 
   it('signs and submits, returning Approved with the tx hash', async () => {
     teardown.push(
-      bridge(onActiveNetwork(() => ({ status: 'success', type: 'TRANSACTION_SUCCESS', data: { hash: 'deadbeef' } }))),
+      bridge(onConnectedWallet(() => ({ status: 'success', type: 'TRANSACTION_SUCCESS', data: { hash: 'deadbeef' } }))),
     );
     const { provider } = await discoverWallet();
 
@@ -177,7 +180,7 @@ describe('GnoConnect handshake, end to end', () => {
   // The user declining is an answer, not an error.
   it('resolves Rejected when the user declines, rather than throwing', async () => {
     teardown.push(
-      bridge(onActiveNetwork(() => ({ status: 'failure', type: 'TRANSACTION_REJECTED', code: 4000, data: null }))),
+      bridge(onConnectedWallet(() => ({ status: 'failure', type: 'TRANSACTION_REJECTED', code: 4000, data: null }))),
     );
     const { provider } = await discoverWallet();
 
@@ -189,7 +192,7 @@ describe('GnoConnect handshake, end to end', () => {
   // A genuine failure is not an answer, so it rejects the promise.
   it('rejects the promise when the wallet is locked', async () => {
     teardown.push(
-      bridge(onActiveNetwork(() => ({ status: 'failure', type: 'WALLET_LOCKED', code: 2000, data: null }))),
+      bridge(onConnectedWallet(() => ({ status: 'failure', type: 'WALLET_LOCKED', code: 2000, data: null }))),
     );
     const { provider } = await discoverWallet();
 
@@ -238,7 +241,7 @@ describe('GnoConnect handshake, end to end', () => {
   // single-message baseline is a subset of what it can carry.
   it('accepts a multi-message call', async () => {
     teardown.push(
-      bridge(onActiveNetwork(() => ({ status: 'success', type: 'TRANSACTION_SUCCESS', data: { hash: 'multi' } }))),
+      bridge(onConnectedWallet(() => ({ status: 'success', type: 'TRANSACTION_SUCCESS', data: { hash: 'multi' } }))),
     );
     const { provider } = await discoverWallet();
 
@@ -248,11 +251,60 @@ describe('GnoConnect handshake, end to end', () => {
     });
   });
 
+  // Regression: `sendTx` used to assume the origin was already established, so
+  // the standard's *core* method silently depended on `connect`, which the
+  // standard makes optional. A page implementing only `sendTx` — gnoweb's
+  // chooser — got NOT_CONNECTED and no way to act on it.
+  it('establishes the origin before signing, without a prior connect()', async () => {
+    const seenRequests: string[] = [];
+    teardown.push(
+      bridge(
+        onConnectedWallet((request) => {
+          seenRequests.push(request.type);
+          return { status: 'success', type: 'TRANSACTION_SUCCESS', data: { hash: 'ok' } };
+        }),
+      ),
+    );
+    const { provider } = await discoverWallet();
+    // Deliberately no provider.connect() first.
+    await expect(provider.sendTx(INTENT)).resolves.toEqual({
+      status: 'Approved',
+      args: { hash: 'ok' },
+    });
+    expect(seenRequests).toEqual(['DO_CONTRACT']);
+  });
+
+  // Establishing is unconditional, so a site the wallet already knows must not
+  // be turned away: ALREADY_CONNECTED is the state the caller asked for.
+  it('treats an already-connected site as established', async () => {
+    teardown.push(
+      bridge((request) => {
+        if (request.type === 'ADD_ESTABLISH') {
+          return { status: 'failure', type: 'ALREADY_CONNECTED', code: 4001, data: null };
+        }
+        if (request.type === 'GET_NETWORK') {
+          return {
+            status: 'success',
+            type: 'GET_NETWORK',
+            data: { chainId: ACTIVE_CHAIN_ID, rpcUrl: ACTIVE_RPC_URL, networkName: 'Local' },
+          };
+        }
+        return { status: 'success', type: 'TRANSACTION_SUCCESS', data: { hash: 'again' } };
+      }),
+    );
+    const { provider } = await discoverWallet();
+
+    await expect(provider.sendTx(INTENT)).resolves.toEqual({
+      status: 'Approved',
+      args: { hash: 'again' },
+    });
+  });
+
   // chainid selects the network. Without one there is nothing to select, and
   // "whichever chain the wallet happens to be on" is how a dapp built for one
   // chain gets a signature valid on another.
   it('refuses a request that names no chain', async () => {
-    teardown.push(bridge(onActiveNetwork(() => ({}))));
+    teardown.push(bridge(onConnectedWallet(() => ({}))));
     const { provider } = await discoverWallet();
 
     await expect(
@@ -265,6 +317,9 @@ describe('GnoConnect handshake, end to end', () => {
   it('declines when the user refuses to switch to the requested chain', async () => {
     teardown.push(
       bridge((request) => {
+        if (request.type === 'ADD_ESTABLISH') {
+          return { status: 'success', type: 'CONNECTION_SUCCESS', data: {} };
+        }
         if (request.type === 'GET_NETWORK') {
           return {
             status: 'success',
@@ -287,7 +342,7 @@ describe('GnoConnect handshake, end to end', () => {
   it('refuses to sign as an account other than the pinned signer', async () => {
     teardown.push(
       bridge(
-        onActiveNetwork(() => ({
+        onConnectedWallet(() => ({
           status: 'success',
           type: 'GET_ACCOUNT',
           data: { address: 'g1someoneelse', chainId: 'dev', publicKey: { value: 'pub' } },
@@ -304,7 +359,7 @@ describe('GnoConnect handshake, end to end', () => {
   it('signs when the pinned signer is the active account', async () => {
     teardown.push(
       bridge(
-        onActiveNetwork((request) => {
+        onConnectedWallet((request) => {
           if (request.type === 'GET_ACCOUNT') {
             return {
               status: 'success',

@@ -133,9 +133,36 @@ async function assertSigner(intents: GnoTransactionIntent[]): Promise<void> {
   }
 }
 
+/**
+ * Establishes the connection `sendTx` needs, if it is not already there.
+ *
+ * Every executor call refuses with `NOT_CONNECTED` until the origin has been
+ * established, so without this the standard's *core* method would depend on
+ * `connect` — which the standard makes *optional*. A page that implements only
+ * `sendTx`, as gnoweb's chooser does, would get "a connection has not been
+ * established" and no way to act on it.
+ *
+ * Unconditional rather than establish-on-failure: `ALREADY_CONNECTED` is one of
+ * the benign types `toUserResponse` reports as Approved, so the call is
+ * idempotent and costs one message when the site is already known. The user sees
+ * the connect approval before the transaction approval on first use, and only
+ * the transaction approval afterwards.
+ */
+async function ensureEstablished(): Promise<void> {
+  const established = await new AdenaExecutor().addEstablish(siteName());
+  const result = toUserResponse(established, () => null);
+  if (result.status === 'Rejected') {
+    throw new GnoConnectRequestError(
+      'no_signer',
+      'The user declined to connect this site to the wallet',
+    );
+  }
+}
+
 async function prepare(
   intents: GnoTransactionIntent[],
 ): Promise<Awaited<ReturnType<typeof buildTransactionParams>>> {
+  await ensureEstablished();
   const network = await resolveNetwork(intents);
   await assertSigner(intents);
   return buildTransactionParams(intents, network);

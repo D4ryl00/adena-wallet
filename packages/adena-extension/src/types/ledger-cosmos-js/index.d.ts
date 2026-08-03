@@ -17,6 +17,7 @@ declare module 'ledger-cosmos-js' {
 
   export interface AppInfoResponse {
     readonly appName: string;
+    readonly return_code: number;
     readonly error_message: string;
   }
 

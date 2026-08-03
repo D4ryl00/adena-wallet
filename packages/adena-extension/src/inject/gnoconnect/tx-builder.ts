@@ -140,6 +140,12 @@ export function toContractMessage(
 export async function buildTransactionParams(
   intents: GnoTransactionIntent[],
   network: ResolvedNetwork,
+  /**
+   * The endpoint the page declared, for the review screen only. Deliberately a
+   * separate parameter from `network`: it must be impossible to reach it from
+   * anywhere in this function that builds or resolves anything.
+   */
+  declaredRpcUrl?: string,
 ): Promise<TransactionParams & { gasFee: number; gasWanted: number }> {
   if (intents.length === 0) {
     throw new GnoConnectRequestError('invalid_request', 'No transaction intent supplied');
@@ -180,6 +186,11 @@ export async function buildTransactionParams(
       chainId: network.chainId,
       rpcUrl: network.rpcUrl,
     },
+    // Only when it disagrees with what we will actually use — an agreeing
+    // declaration is not worth a row on the review screen.
+    ...(declaredRpcUrl && declaredRpcUrl !== network.rpcUrl
+      ? { declaredRpcUrl }
+      : {}),
     // Single-message calls carry named arguments for the approval screen to
     // display and type-check. Multi-message calls do not: the screen renders a
     // flat list with no message index, so N sets would be ambiguous.

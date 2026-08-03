@@ -955,6 +955,13 @@ const ApproveTransactionContainer: React.FC = () => {
       requiresHoldConfirmation={requiresHoldConfirmation || approvalBlocked}
       onFinishHold={handleFinishHold}
       simulateErrorBannerMessage={parsedSimulateErrors.globalErrorMessage}
+      network={{
+        name: currentNetwork.networkName,
+        chainId: currentNetwork.chainId,
+        rpcUrl: currentNetwork.rpcUrl,
+        // Display-only, and set only when it disagrees with what we will use.
+        declaredRpcUrl: requestData?.data?.declaredRpcUrl,
+      }}
       sessionGuardBannerMessage={
         requestedNetworkMismatchMessage ||
         sessionAdminNetworkUnsupportedMessage ||

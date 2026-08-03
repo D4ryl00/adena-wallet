@@ -67,6 +67,17 @@ export type TransactionParams = {
     chainId: string;
     rpcUrl: string;
   };
+  /**
+   * The endpoint the *page* declared, when it differs from the one the wallet
+   * will actually use for this chain.
+   *
+   * **Display only, and untrusted.** Nothing that builds, queries or signs may
+   * read this: a page choosing the node is the bug the resolution rules exist to
+   * prevent. It is carried solely so the review screen can show the divergence,
+   * which is the only signal available that a non-unique chain id (`dev` names
+   * every devnet) selected a different network than the page meant.
+   */
+  declaredRpcUrl?: string;
   arguments?: GnoArgumentInfo[] | null;
 };
 

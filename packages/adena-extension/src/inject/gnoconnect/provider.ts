@@ -1,5 +1,8 @@
 import { AdenaExecutor } from '@inject/executor/executor';
-import { parseGnoConnectInfo } from '@inject/message/methods/gno-connect';
+import {
+  normalizeGnoConnectRpc,
+  parseGnoConnectInfo,
+} from '@inject/message/methods/gno-connect';
 
 import { GnoConnectRequestError, toUserResponse } from './response';
 import { buildTransactionParams, ResolvedNetwork } from './tx-builder';
@@ -165,7 +168,15 @@ async function prepare(
   await ensureEstablished();
   const network = await resolveNetwork(intents);
   await assertSigner(intents);
-  return buildTransactionParams(intents, network);
+  // Display only. A chain id is not unique — `dev` names every devnet — so a
+  // declared endpoint we are not using is the only signal that `chainid` may
+  // have selected a different network than the page meant. Shown, never used.
+  const declared = intents.find((intent) => intent.rpc)?.rpc;
+  return buildTransactionParams(
+    intents,
+    network,
+    declared ? normalizeGnoConnectRpc(declared) : undefined,
+  );
 }
 
 async function submit(

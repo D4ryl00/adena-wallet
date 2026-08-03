@@ -90,6 +90,28 @@ export const ApproveTransactionWrapper = styled.div<{ $isErrorNetworkFee: boolea
     background-color: ${getTheme('neutral', '_9')};
   }
 
+  .network-wrapper {
+    width: 100%;
+    min-height: 48px;
+    border-radius: 30px;
+    padding: 10px 18px;
+    margin-bottom: 8px;
+    background-color: ${getTheme('neutral', '_9')};
+    border: 1px solid ${getTheme('neutral', '_8')};
+    gap: 10px;
+    ${fonts.body2Reg};
+
+    span.value {
+      display: block;
+      width: 100%;
+      max-width: 100%;
+      word-break: break-all;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+  }
+
   .memo-wrapper {
     width: 100%;
     min-height: 48px;

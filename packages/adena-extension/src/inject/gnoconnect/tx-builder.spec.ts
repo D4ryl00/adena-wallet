@@ -190,3 +190,39 @@ describe('buildTransactionParams, argument forms', () => {
     expect(params.networkInfo).toEqual(network);
   });
 });
+
+// A chain id is not globally unique — `dev` names every devnet — so a declared
+// endpoint the wallet is not using is the only signal that `chainid` may have
+// selected a different network than the page meant. Carried for display, never
+// used to build or resolve anything.
+describe('buildTransactionParams, declared endpoint', () => {
+  const network = { chainId: 'dev', rpcUrl: 'http://127.0.0.1:26657' };
+
+  it('surfaces a declared endpoint that differs from the one in use', async () => {
+    const params = await buildTransactionParams(
+      [intent({ args: [{ value: '2' }] })],
+      network,
+      'http://127.0.0.1:36657',
+    );
+
+    expect(params.declaredRpcUrl).toBe('http://127.0.0.1:36657');
+    // The network actually used is untouched by it.
+    expect(params.networkInfo).toEqual(network);
+  });
+
+  it('says nothing when the declaration agrees', async () => {
+    const params = await buildTransactionParams(
+      [intent({ args: [{ value: '2' }] })],
+      network,
+      network.rpcUrl,
+    );
+
+    expect(params.declaredRpcUrl).toBeUndefined();
+  });
+
+  it('says nothing when the page declared no endpoint', async () => {
+    const params = await buildTransactionParams([intent({ args: [{ value: '2' }] })], network);
+
+    expect(params.declaredRpcUrl).toBeUndefined();
+  });
+});

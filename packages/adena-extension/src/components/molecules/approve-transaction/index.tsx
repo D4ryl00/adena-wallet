@@ -42,6 +42,17 @@ export interface ApproveTransactionProps {
   networkFee: NetworkFeeType | null;
   /** Quote for the fee token, from `useFeeTokenPrice`; drives the fee rows' USD line. */
   feeTokenQuote?: FeeTokenQuote | null;
+  /**
+   * The network this will be signed and broadcast against. `declaredRpcUrl` is
+   * set only when the requesting page named a *different* endpoint for the same
+   * chain — display-only, and never used to decide anything.
+   */
+  network?: {
+    name: string;
+    chainId: string;
+    rpcUrl: string;
+    declaredRpcUrl?: string;
+  } | null;
   transactionData: string;
   opened: boolean;
   argumentInfos?: GnoArgumentInfo[];
@@ -85,6 +96,7 @@ export const ApproveTransaction: React.FC<ApproveTransactionProps> = ({
   hasMemo,
   networkFee,
   feeTokenQuote,
+  network,
   isErrorNetworkFee,
   isErrorStorageDeposit = false,
   transactionData,
@@ -311,6 +323,33 @@ export const ApproveTransaction: React.FC<ApproveTransactionProps> = ({
         <img className='logo' src={logo || UnknownLogo} alt='logo img' />
         <span>{domain}</span>
       </div>
+
+      {/* What this will be signed and broadcast against. A user cannot judge a
+          transaction without knowing the chain it lands on, and the endpoint is
+          what distinguishes two networks sharing a chain id. */}
+      {network && (
+        <div className='network-wrapper row'>
+          <span className='key'>Network:</span>
+          <span className='value'>
+            {network.name} ({network.chainId}) — {network.rpcUrl}
+          </span>
+        </div>
+      )}
+
+      {/* The page named an endpoint we are not using. Usually benign — two nodes
+          on one chain — but a chain id is not unique (`dev` names every devnet),
+          so this is the only signal that it may have selected a different
+          network than the page meant. Shown, never acted on. */}
+      {network?.declaredRpcUrl && (
+        <div className='simulate-error-banner'>
+          <span className='error-label'>NETWORK:&nbsp;</span>
+          <span className='error-text'>
+            This site expected {network.declaredRpcUrl}. Signing against{' '}
+            {network.rpcUrl} instead. Same chain id — check it is the network you
+            mean.
+          </span>
+        </div>
+      )}
 
       <ApproveTransactionMessageBox
         messages={transactionMessages}

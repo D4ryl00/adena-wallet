@@ -8,6 +8,7 @@ import { GnoConnectRequestError, toUserResponse } from './response';
 import { buildTransactionParams, ResolvedNetwork } from './tx-builder';
 import {
   GnoAccount,
+  GnoBatchIntent,
   GnoConnectProvider,
   GnoNetwork,
   GnoTransactionIntent,
@@ -63,21 +64,13 @@ function pageDeclaredChainId(): string {
  * choose the node that answers the `vm/qdoc` lookup deciding argument order, nor
  * the one that reports the sequence and gas the user is shown.
  */
-function requestedChainId(intents: GnoTransactionIntent[]): string {
-  const requested = intents.find((intent) => intent.chainid)?.chainid || pageDeclaredChainId();
+function requestedChainId(batch: GnoBatchIntent): string {
+  const requested = batch.chainid || pageDeclaredChainId();
 
   if (!requested) {
     throw new GnoConnectRequestError(
       'invalid_request',
-      'No chainid: name the chain on the intent or in gnoconnect:chainid metadata',
-    );
-  }
-
-  const mismatched = intents.find((intent) => intent.chainid && intent.chainid !== requested);
-  if (mismatched) {
-    throw new GnoConnectRequestError(
-      'invalid_request',
-      'All messages in one transaction must name the same chainid',
+      'No chainid: name the chain on the request or in gnoconnect:chainid metadata',
     );
   }
 
@@ -169,13 +162,17 @@ async function ensureEstablished(): Promise<void> {
 }
 
 async function prepare(
-  intents: GnoTransactionIntent[],
+  batch: GnoBatchIntent,
 ): Promise<Awaited<ReturnType<typeof buildTransactionParams>>> {
+  if (batch.msgs.length === 0) {
+    throw new GnoConnectRequestError('invalid_request', 'No transaction intent supplied');
+  }
+
   await ensureEstablished();
 
-  const requested = requestedChainId(intents);
+  const requested = requestedChainId(batch);
   const active = await readNetwork();
-  const signer = intents.find((intent) => intent.signer)?.signer;
+  const { signer } = batch;
 
   // Checked before the switch prompt, but only while we are still on the chain
   // the page read the pin from. A request pinned to an account the wallet is not
@@ -193,19 +190,22 @@ async function prepare(
   // Display only. A chain id is not unique — `dev` names every devnet — so a
   // declared endpoint we are not using is the only signal that `chainid` may
   // have selected a different network than the page meant. Shown, never used.
-  const declared = intents.find((intent) => intent.rpc)?.rpc;
   return buildTransactionParams(
-    intents,
+    batch.msgs,
     network,
-    declared ? normalizeGnoConnectRpc(declared) : undefined,
+    batch.rpc ? normalizeGnoConnectRpc(batch.rpc) : undefined,
     signer,
   );
 }
 
-async function submit(
-  intents: GnoTransactionIntent[],
-): Promise<UserResponse<{ hash: string }>> {
-  const response = await new AdenaExecutor().doContract(await prepare(intents));
+/** A single intent is a one-message batch: same transaction, same envelope. */
+function toBatch(tx: GnoTransactionIntent): GnoBatchIntent {
+  const { chainid, rpc, signer, ...msg } = tx;
+  return { msgs: [msg], chainid, rpc, signer };
+}
+
+async function submit(batch: GnoBatchIntent): Promise<UserResponse<{ hash: string }>> {
+  const response = await new AdenaExecutor().doContract(await prepare(batch));
   return toUserResponse(response, (data) => ({
     hash: (data as BroadcastResultLike)?.hash ?? '',
   }));
@@ -231,15 +231,15 @@ function toAccount(data: AccountResultLike): GnoAccount {
 export function createGnoConnectProvider(): GnoConnectProvider {
   const provider: GnoConnectProvider = {
     async sendTx(tx) {
-      return submit([tx]);
+      return submit(toBatch(tx));
     },
 
-    async sendTxs(txs) {
-      return submit(txs);
+    async sendTxs(tx) {
+      return submit(tx);
     },
 
     async signTx(tx) {
-      const response = await new AdenaExecutor().signTx(await prepare([tx]));
+      const response = await new AdenaExecutor().signTx(await prepare(toBatch(tx)));
       // Base64 amino-binary, the exact string broadcast_tx_sync takes. The page
       // broadcasts it unmodified: decoding and re-encoding needs a client that
       // can represent whatever scheme the wallet signed with, and a session or

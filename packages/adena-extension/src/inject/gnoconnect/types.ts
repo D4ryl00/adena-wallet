@@ -57,7 +57,11 @@ export function isNamedArgument(
  * without the launch link's envelope — a direct call returns a Promise, so it
  * needs no `callback`/`state` for out-of-band delivery.
  */
-export interface GnoTransactionIntent {
+/**
+ * One message. Everything here varies from one `MsgCall` to the next within a
+ * single transaction.
+ */
+export interface GnoMessageIntent {
   /** Full package path, e.g. `gno.land/r/demo/boards`. */
   path: string;
   /** Exported function name. */
@@ -66,6 +70,9 @@ export interface GnoTransactionIntent {
   args: GnoTransactionArgument[];
   /** Coins to attach, gnokey syntax (e.g. `1000000ugnot`). */
   send?: string;
+}
+
+export interface GnoTransactionIntent extends GnoMessageIntent {
   /**
    * Selects the network. Falls back to `gnoconnect:chainid`; with neither, the
    * request is `invalid_request` — a signature is chain-bound, so "whichever
@@ -85,6 +92,27 @@ export interface GnoTransactionIntent {
    * Without it, a page that connected as one account and rendered its address
    * signs as whatever account the user has since switched to.
    */
+  signer?: string;
+}
+
+/**
+ * Several messages, one signature, one broadcast.
+ *
+ * The transaction-level fields sit here rather than on each message because only
+ * the message fields can vary within one broadcast: one transaction lands on one
+ * chain under one signature. An array of full intents let a page name two chains
+ * or two signers in one request — something with no meaning, which every wallet
+ * would then answer differently and indistinguishably. Hoisting makes it
+ * unwritable instead.
+ */
+export interface GnoBatchIntent {
+  /** At least one; an empty batch is `invalid_request`. */
+  msgs: GnoMessageIntent[];
+  /** Selects the network, exactly as on a single intent. */
+  chainid?: string;
+  /** Advisory only, exactly as on a single intent. */
+  rpc?: string;
+  /** Pins the identity to act as, for the whole transaction. */
   signer?: string;
 }
 
@@ -142,7 +170,7 @@ export interface GnoConnectProvider {
    * so the standard's single-message baseline is a subset of what it can do.
    * Announced as the in-page analogue of the `multi_msg` feature token.
    */
-  sendTxs(txs: GnoTransactionIntent[]): Promise<UserResponse<{ hash: string }>>;
+  sendTxs(tx: GnoBatchIntent): Promise<UserResponse<{ hash: string }>>;
 
   /** Sign without broadcasting. `signedtx` is base64 amino-binary, opaque. */
   signTx(tx: GnoTransactionIntent): Promise<UserResponse<{ signedtx: string }>>;

@@ -115,10 +115,15 @@ function discoverWallet(): Promise<GnoWalletAnnouncement> {
 const ACTIVE_CHAIN_ID = 'dev';
 const ACTIVE_RPC_URL = 'http://127.0.0.1:26657';
 
-const INTENT = {
+/** One message: what varies from one MsgCall to the next inside a transaction. */
+const MSG = {
   path: 'gno.land/r/demo/boards',
   func: 'CreateThread',
   args: [{ name: 'bid', value: '2' }],
+};
+
+const INTENT = {
+  ...MSG,
   // Required: chainid selects the network. The wallet resolves it against the
   // networks the user configured and signs through that one's endpoint.
   chainid: ACTIVE_CHAIN_ID,
@@ -248,10 +253,25 @@ describe('GnoConnect handshake, end to end', () => {
     );
     const { provider } = await discoverWallet();
 
-    await expect(provider.sendTxs([INTENT, INTENT])).resolves.toEqual({
+    await expect(
+      provider.sendTxs({ msgs: [MSG, MSG], chainid: ACTIVE_CHAIN_ID }),
+    ).resolves.toEqual({
       status: 'Approved',
       args: { hash: 'multi' },
     });
+  });
+
+  // A batch carries the chain and the signer once, on the transaction, so there
+  // is no way to write two of either. This is the shape doing the work: the old
+  // array of full intents let a page name two chains in one broadcast, and every
+  // wallet answered that differently.
+  it('refuses a batch with no messages', async () => {
+    teardown.push(bridge(onConnectedWallet(() => ({}))));
+    const { provider } = await discoverWallet();
+
+    await expect(
+      provider.sendTxs({ msgs: [], chainid: ACTIVE_CHAIN_ID }),
+    ).rejects.toThrow(/No transaction intent/);
   });
 
   // Regression: `sendTx` used to assume the origin was already established, so
@@ -464,16 +484,20 @@ describe('GnoConnect handshake, end to end', () => {
     expect(seenRequests).not.toContain('SWITCH_NETWORK');
   });
 
-  // One transaction lands on one chain. Messages naming different chains
-  // describe something that cannot be signed, and picking one of them silently
-  // would sign the others against a chain they never named.
-  it('refuses a batch whose messages name different chains', async () => {
-    teardown.push(bridge(onConnectedWallet(() => ({}))));
+  // A batch names its chain once, on the transaction. Falling back to the page's
+  // declaration works the same as for a single intent.
+  it('resolves a batch chain from the page when the request names none', async () => {
+    document.head.innerHTML = `<meta name="gnoconnect:chainid" content="${ACTIVE_CHAIN_ID}" />`;
+    teardown.push(
+      bridge(onConnectedWallet(() => ({ status: 'success', type: 'TRANSACTION_SUCCESS', data: { hash: 'meta' } }))),
+    );
     const { provider } = await discoverWallet();
 
-    await expect(
-      provider.sendTxs([INTENT, { ...INTENT, chainid: 'test5' }]),
-    ).rejects.toThrow(/same chainid/);
+    await expect(provider.sendTxs({ msgs: [MSG] })).resolves.toEqual({
+      status: 'Approved',
+      args: { hash: 'meta' },
+    });
+    document.head.innerHTML = '';
   });
 
   it('signs without broadcasting, returning the encoded transaction', async () => {

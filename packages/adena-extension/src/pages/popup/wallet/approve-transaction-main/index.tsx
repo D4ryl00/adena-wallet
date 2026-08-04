@@ -29,8 +29,10 @@ import { validateMessageArguments } from '@common/utils/argument-validation';
 import {
   createFaviconByHostname,
   decodeParameter,
+  formatAddress,
   parseParameters,
 } from '@common/utils/client-utils';
+import { toDisplayEndpoint } from '@common/utils/endpoint-display';
 import { fetchHealth } from '@common/utils/fetch-utils';
 import { parseSimulateErrors } from '@common/utils/transaction-error-parser';
 import { validateInjectionDataWithAddress } from '@common/validation/validation-transaction';
@@ -69,13 +71,14 @@ function makeDefaultNetworkInfo(
   chainId: string,
   rpcUrl: string,
   addressPrefix: string,
+  networkName: string,
 ): NetworkMetainfo {
   return {
     addressPrefix,
     chainId,
     rpcUrl,
     networkId: chainId,
-    networkName: '',
+    networkName,
     apiUrl: '',
     indexerUrl: '',
     chainName: '',
@@ -173,14 +176,77 @@ const ApproveTransactionContainer: React.FC = () => {
     return !!requestedSignerAccountId && !!wallet && !signingAccount;
   }, [requestedSignerAccountId, signingAccount, wallet]);
 
+  // The address a GnoConnect request pinned as its signer. The provider checks
+  // it too, but that check runs in the page world before this window exists —
+  // "MUST sign as that identity and MUST NOT sign as another" is a property of
+  // the signature, so it also has to hold here, against the account this screen
+  // is about to sign with.
+  const requestedSigner = useMemo<string | null>(() => {
+    const value = requestData?.data?.signer;
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  }, [requestData?.data?.signer]);
+
+  const [signingAddress, setSigningAddress] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!signingAccount) {
+      setSigningAddress(null);
+      return undefined;
+    }
+
+    let abandoned = false;
+    getDappVisibleAddress(signingAccount, chain.bech32Prefix).then((address) => {
+      if (!abandoned) {
+        setSigningAddress(address);
+      }
+    });
+
+    return () => {
+      abandoned = true;
+    };
+  }, [signingAccount, chain.bech32Prefix]);
+
+  // Fails closed: until the address has resolved this is unmet, because "not yet
+  // known" is not "satisfied".
+  const signerPinUnmet = useMemo(() => {
+    if (!requestedSigner) {
+      return false;
+    }
+    return signingAddress !== requestedSigner;
+  }, [requestedSigner, signingAddress]);
+
+  const signerPinUnmetMessage = signerPinUnmet
+    ? `This request must be signed by ${formatAddress(
+        requestedSigner as string,
+      )}. Switch to that account in Adena to continue.`
+    : null;
+
   const currentNetwork: NetworkMetainfo = useMemo(() => {
     const networkInfo = requestData?.data?.networkInfo;
     if (!!networkInfo?.chainId && !!networkInfo?.rpcUrl) {
-      return makeDefaultNetworkInfo(networkInfo.chainId, networkInfo.rpcUrl, chain.bech32Prefix);
+      // The request carries a chain id and an endpoint but no human-readable
+      // name, and the review screen has to show one — an empty name renders as
+      // " (test5) — https://…". The wallet's own name for the network is the
+      // right one to borrow, but only once the two describe the same network:
+      // until they agree, approval is blocked and the banner explains the
+      // mismatch, so labelling the request with the other network's name would
+      // be the one thing on screen actively contradicting it.
+      const named =
+        currentWalletNetwork?.chainId === networkInfo.chainId &&
+        currentWalletNetwork?.rpcUrl === networkInfo.rpcUrl
+          ? currentWalletNetwork.networkName
+          : '';
+
+      return makeDefaultNetworkInfo(
+        networkInfo.chainId,
+        networkInfo.rpcUrl,
+        chain.bech32Prefix,
+        named,
+      );
     }
 
     return currentWalletNetwork;
-  }, [currentWalletNetwork, requestData]);
+  }, [currentWalletNetwork, requestData, chain.bech32Prefix]);
 
   useEffect(() => {
     if (
@@ -249,6 +315,7 @@ const ApproveTransactionContainer: React.FC = () => {
     isSessionAdminNetworkUnsupported ||
     isSessionAdminSigningAccountUnsupported ||
     signingAccountMissing ||
+    signerPinUnmet ||
     !isRequestedNetworkReady;
 
   const hasMemo = useMemo(() => {
@@ -960,10 +1027,13 @@ const ApproveTransactionContainer: React.FC = () => {
         chainId: currentNetwork.chainId,
         rpcUrl: currentNetwork.rpcUrl,
         // Display-only, and set only when it disagrees with what we will use.
-        declaredRpcUrl: requestData?.data?.declaredRpcUrl,
+        // Page-written text, so it is reduced to a parsed origin before it is
+        // shown — see toDisplayEndpoint.
+        declaredRpcUrl: toDisplayEndpoint(requestData?.data?.declaredRpcUrl),
       }}
       sessionGuardBannerMessage={
         requestedNetworkMismatchMessage ||
+        signerPinUnmetMessage ||
         sessionAdminNetworkUnsupportedMessage ||
         signingAccountMissingMessage ||
         sessionAdminSigningAccountUnsupportedMessage

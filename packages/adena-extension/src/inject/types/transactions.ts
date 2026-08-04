@@ -78,6 +78,17 @@ export type TransactionParams = {
    * every devnet) selected a different network than the page meant.
    */
   declaredRpcUrl?: string;
+  /**
+   * The bech32 address the request pinned as its signer.
+   *
+   * Unlike `declaredRpcUrl` this one is enforced: the approval screen refuses to
+   * sign unless the account it would sign with resolves to exactly this address.
+   * Checking it only where the request is made is not enough — the check and the
+   * signature happen in different worlds and at different times, and "MUST sign
+   * as that identity and MUST NOT sign as another" is a property of the
+   * signature, so it has to hold where the signature is produced.
+   */
+  signer?: string;
   arguments?: GnoArgumentInfo[] | null;
 };
 

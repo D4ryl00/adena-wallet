@@ -146,6 +146,12 @@ export async function buildTransactionParams(
    * anywhere in this function that builds or resolves anything.
    */
   declaredRpcUrl?: string,
+  /**
+   * The `signer` pin, carried through so the approval screen can enforce it
+   * against the account it is about to sign with. The provider checks it too,
+   * but that check happens in the page world before the popup exists.
+   */
+  signer?: string,
 ): Promise<TransactionParams & { gasFee: number; gasWanted: number }> {
   if (intents.length === 0) {
     throw new GnoConnectRequestError('invalid_request', 'No transaction intent supplied');
@@ -191,6 +197,7 @@ export async function buildTransactionParams(
     ...(declaredRpcUrl && declaredRpcUrl !== network.rpcUrl
       ? { declaredRpcUrl }
       : {}),
+    ...(signer ? { signer } : {}),
     // Single-message calls carry named arguments for the approval screen to
     // display and type-check. Multi-message calls do not: the screen renders a
     // flat list with no message index, so N sets would be ambiguous.

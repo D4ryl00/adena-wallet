@@ -1,20 +1,9 @@
-import {
-  getLoopbackOriginChainId,
-  GNO_CONNECT_ALLOWED_ORIGINS,
-  LOOPBACK_LOCAL_HOST_PATTERN,
-} from '@common/constants/gno-connect-allowlist.constant';
+import { LOOPBACK_LOCAL_HOST_PATTERN } from '@common/constants/gno-connect-allowlist.constant';
 import {
   GNO_CHAIN_ID_META_TAG,
   GNO_CONNECT_PREFIX,
-  GNO_PACKAGE_PREFIX,
   GNO_RPC_META_TAG,
 } from '@common/constants/metatag.constant';
-import {
-  GNO_FUNC_PARAM,
-  GNO_HELP_MARKER,
-  GNO_MAX_DEPOSIT_PARAM,
-  GNO_SEND_PARAM,
-} from '@common/constants/url.constant';
 import { hasHttpProtocol } from '@common/provider/gno/utils';
 
 export interface GnoConnectInfo {
@@ -84,105 +73,32 @@ export function parseGnoConnectInfo(): GnoConnectInfo | null {
 }
 
 /**
- * Checks whether the given dApp origin is unconditionally allowed to declare
- * RPC/chainId via gnoconnect meta tags. Only remote (https) gno origins qualify;
- * strict equality on the full origin (scheme + host + port). Loopback origins are
- * never statically trusted — use getLoopbackGnoConnectChainId with a runtime
- * active-network check instead.
+ * Reads `gnoconnect:chainid` on its own.
+ *
+ * Deliberately separate from `parseGnoConnectInfo`, which requires *both* tags
+ * because its consumer — the gnoweb event watcher — has nothing to do without an
+ * endpoint. Network resolution wants the opposite: `chainid` selects the
+ * network, and `rpc` is the one field the wallet is forbidden to act on, so
+ * gating the chain id on an endpoint we will never use is backwards. A page that
+ * declares only the chain — the correct thing for it to do — resolves fine.
+ *
+ * @returns the declared chain id, or '' when the page declares none.
  */
-export function isAllowedGnoConnectOrigin(origin: string): boolean {
-  return GNO_CONNECT_ALLOWED_ORIGINS.includes(origin);
-}
-
-/**
- * Whether Adena may act on a gnoconnect surface at this origin at all.
- *
- * Loopback origins are included: their runtime trust decision (meta chainId vs
- * the wallet's active network) happens later in CommandHandler and always ends
- * with a user-visible notice, so the origin itself is "handled".
- *
- * Callers that swallow the browser's default behaviour (the anchor and form
- * interceptors) MUST consult this first: for an origin Adena will never act on,
- * the page's own navigation is strictly more useful than a click that does
- * nothing. The gate in CommandHandler stays authoritative — this is only the
- * pre-flight answer the interceptors need before deciding to preventDefault.
- */
-export function canHandleGnoConnectOrigin(origin: string): boolean {
-  return isAllowedGnoConnectOrigin(origin) || getLoopbackGnoConnectChainId(origin) !== null;
-}
-
-/**
- * For a loopback gno origin (e.g. a local dev node), returns the chainId it is
- * permitted to act as, per chains.json, or null if the origin is not a known
- * loopback gno origin. Callers MUST additionally verify this chainId is the
- * wallet's active network before honoring the origin's gnoconnect declarations,
- * so an arbitrary local process holding the port cannot drive the wallet.
- */
-export function getLoopbackGnoConnectChainId(origin: string): string | null {
-  return getLoopbackOriginChainId(origin);
-}
-
-/**
- * Runtime trust decision for a loopback gnoconnect origin.
- *
- * A loopback origin (e.g. a local dev node) is honored only when BOTH hold:
- * - the meta-declared chainId equals the chainId chains.json maps the origin to
- *   (the meta tag is attacker-controllable, so it must not act as a foreign
- *   chain), and
- * - that same chainId is the wallet's currently active network (so an arbitrary
- *   process holding the local port cannot drive the flow while the user is
- *   elsewhere).
- *
- * @param loopbackChainId chainId the origin is permitted to act as (from chains.json)
- * @param metaChainId chainId the page declares via gnoconnect meta tag
- * @param activeChainId chainId of the wallet's active network (undefined if unavailable/locked)
- */
-export function isLoopbackGnoConnectTrusted(
-  loopbackChainId: string,
-  metaChainId: string,
-  activeChainId: string | undefined,
-): boolean {
-  return getLoopbackGnoConnectRejection(loopbackChainId, metaChainId, activeChainId) === null;
-}
-
-/**
- * Why the gate above refused, or null when it did not refuse.
- *
- * This is the primitive and isLoopbackGnoConnectTrusted is derived from it, so a
- * caller can never report a reason the decision did not actually take. The three
- * outcomes partition exactly the cases the boolean rejects:
- *
- * - ORIGIN_CHAIN_MISMATCH: the page declared a chainId the origin may not act
- *   as. The only reason driven by page-controlled input.
- * - WALLET_UNAVAILABLE: the wallet reported no active network at all, which is
- *   what a locked wallet looks like from here (getNetwork answers WALLET_LOCKED,
- *   so the caller has no chainId to pass). Split out of the mismatch case below
- *   only so the user can be told to unlock rather than to switch networks.
- * - ACTIVE_NETWORK_MISMATCH: the wallet is on some other network.
- */
-export type LoopbackTrustRejection =
-  | 'ORIGIN_CHAIN_MISMATCH'
-  | 'WALLET_UNAVAILABLE'
-  | 'ACTIVE_NETWORK_MISMATCH';
-
-export function getLoopbackGnoConnectRejection(
-  loopbackChainId: string,
-  metaChainId: string,
-  activeChainId: string | undefined,
-): LoopbackTrustRejection | null {
-  if (metaChainId !== loopbackChainId) {
-    return 'ORIGIN_CHAIN_MISMATCH';
+export function parseGnoConnectChainId(): string {
+  if (document === null) {
+    return '';
   }
 
-  if (activeChainId === undefined) {
-    return 'WALLET_UNAVAILABLE';
-  }
+  const metas = document?.querySelectorAll('meta') || [];
 
-  if (activeChainId !== loopbackChainId) {
-    return 'ACTIVE_NETWORK_MISMATCH';
-  }
+  let chainId = '';
+  metas.forEach((meta) => {
+    if (meta.getAttribute('name') === GNO_CHAIN_ID_META_TAG) {
+      chainId = meta.getAttribute('content') || '';
+    }
+  });
 
-  return null;
+  return chainId;
 }
 
 /**

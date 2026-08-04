@@ -20,6 +20,7 @@ jest.mock('@adena-wallet/sdk', () => ({
     DO_CONTRACT: 'DO_CONTRACT',
     GET_ACCOUNT: 'GET_ACCOUNT',
     GET_NETWORK: 'GET_NETWORK',
+    SIGN_TX: 'SIGN_TX',
     SWITCH_NETWORK: 'SWITCH_NETWORK',
   },
   WalletMessageInfo: new Proxy(
@@ -61,6 +62,7 @@ jest.mock('./tx-builder', () => ({
 
 import { announceGnoWallet } from './announce';
 import { GnoConnectError } from './response';
+import { buildTransactionParams } from './tx-builder';
 import {
   GNO_REGISTER_WALLET_EVENT,
   GNO_REQUEST_WALLET_EVENT,
@@ -156,6 +158,7 @@ describe('GnoConnect handshake, end to end', () => {
   afterEach(() => {
     teardown.forEach((fn) => fn());
     teardown = [];
+    (buildTransactionParams as jest.Mock).mockClear();
   });
 
   it('lets a page that loaded after the wallet still discover it', async () => {
@@ -377,6 +380,173 @@ describe('GnoConnect handshake, end to end', () => {
       status: 'Approved',
       args: { hash: 'pinned' },
     });
+  });
+
+  // The pin is checked here *and* carried into the request, because this check
+  // runs in the page world before the approval screen exists — the account it
+  // sees is not necessarily the one that ends up signing.
+  it('carries the pinned signer through to the approval screen', async () => {
+    teardown.push(
+      bridge(
+        onConnectedWallet((request) => {
+          if (request.type === 'GET_ACCOUNT') {
+            return {
+              status: 'success',
+              type: 'GET_ACCOUNT',
+              data: { address: 'g1abc', chainId: 'dev', publicKey: { value: 'pub' } },
+            };
+          }
+          return { status: 'success', type: 'TRANSACTION_SUCCESS', data: { hash: 'pinned' } };
+        }),
+      ),
+    );
+    const { provider } = await discoverWallet();
+
+    await provider.sendTx({ ...INTENT, signer: 'g1abc' });
+
+    // (intents, network, declaredRpcUrl, signer)
+    expect(buildTransactionParams).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      'g1abc',
+    );
+  });
+
+  // Nothing to carry when the request pinned nothing: an absent `signer` must
+  // not reach the approval screen as a pin it then fails to satisfy.
+  it('carries no signer when the request pinned none', async () => {
+    teardown.push(
+      bridge(onConnectedWallet(() => ({ status: 'success', type: 'TRANSACTION_SUCCESS', data: { hash: 'ok' } }))),
+    );
+    const { provider } = await discoverWallet();
+
+    await provider.sendTx(INTENT);
+
+    expect(buildTransactionParams).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      undefined,
+    );
+  });
+
+  // Checked before the switch prompt: a request that cannot be signed as the
+  // pinned account fails either way, so prompting for a network switch first
+  // asks the user to answer a question that changes nothing.
+  it('fails a pinned signer without first prompting for a network switch', async () => {
+    const seenRequests: string[] = [];
+    teardown.push(
+      bridge((request) => {
+        seenRequests.push(request.type);
+        if (request.type === 'ADD_ESTABLISH') {
+          return { status: 'success', type: 'CONNECTION_SUCCESS', data: {} };
+        }
+        if (request.type === 'GET_NETWORK') {
+          return {
+            status: 'success',
+            type: 'GET_NETWORK',
+            data: { chainId: ACTIVE_CHAIN_ID, rpcUrl: ACTIVE_RPC_URL, networkName: 'Local' },
+          };
+        }
+        return {
+          status: 'success',
+          type: 'GET_ACCOUNT',
+          data: { address: 'g1someoneelse', chainId: 'dev', publicKey: { value: 'pub' } },
+        };
+      }),
+    );
+    const { provider } = await discoverWallet();
+
+    await expect(provider.sendTx({ ...INTENT, signer: 'g1abc' })).rejects.toMatchObject({
+      code: 'signer_unavailable',
+    });
+    expect(seenRequests).not.toContain('SWITCH_NETWORK');
+  });
+
+  // One transaction lands on one chain. Messages naming different chains
+  // describe something that cannot be signed, and picking one of them silently
+  // would sign the others against a chain they never named.
+  it('refuses a batch whose messages name different chains', async () => {
+    teardown.push(bridge(onConnectedWallet(() => ({}))));
+    const { provider } = await discoverWallet();
+
+    await expect(
+      provider.sendTxs([INTENT, { ...INTENT, chainid: 'test5' }]),
+    ).rejects.toThrow(/same chainid/);
+  });
+
+  it('signs without broadcasting, returning the encoded transaction', async () => {
+    teardown.push(
+      bridge(
+        onConnectedWallet(() => ({
+          status: 'success',
+          type: 'SIGN_SUCCESS',
+          data: { encodedTransaction: 'CgoKCC92bS5tX2M=' },
+        })),
+      ),
+    );
+    const { provider } = await discoverWallet();
+
+    await expect(provider.signTx(INTENT)).resolves.toEqual({
+      status: 'Approved',
+      args: { signedtx: 'CgoKCC92bS5tX2M=' },
+    });
+  });
+
+  it('routes signTx through the sign handler, never the broadcast one', async () => {
+    const seenRequests: string[] = [];
+    teardown.push(
+      bridge(
+        onConnectedWallet((request) => {
+          seenRequests.push(request.type);
+          return {
+            status: 'success',
+            type: 'SIGN_SUCCESS',
+            data: { encodedTransaction: 'signed' },
+          };
+        }),
+      ),
+    );
+    const { provider } = await discoverWallet();
+
+    await provider.signTx(INTENT);
+
+    expect(seenRequests).toEqual(['SIGN_TX']);
+  });
+
+  // signTx resolves the network the same way sendTx does — a sign-only request
+  // is still a request to sign for one specific chain.
+  it('declines signTx when the user refuses to switch to the requested chain', async () => {
+    teardown.push(
+      bridge((request) => {
+        if (request.type === 'ADD_ESTABLISH') {
+          return { status: 'success', type: 'CONNECTION_SUCCESS', data: {} };
+        }
+        if (request.type === 'GET_NETWORK') {
+          return {
+            status: 'success',
+            type: 'GET_NETWORK',
+            data: { chainId: 'other', rpcUrl: 'http://other', networkName: 'Other' },
+          };
+        }
+        return { status: 'failure', type: 'SWITCH_NETWORK_REJECTED', code: 4000, data: null };
+      }),
+    );
+    const { provider } = await discoverWallet();
+
+    await expect(provider.signTx(INTENT)).rejects.toMatchObject({
+      code: 'network_declined',
+    });
+  });
+
+  it('resolves signTx as Rejected when the user declines to sign', async () => {
+    teardown.push(
+      bridge(onConnectedWallet(() => ({ status: 'failure', type: 'SIGN_REJECTED', code: 4000, data: null }))),
+    );
+    const { provider } = await discoverWallet();
+
+    await expect(provider.signTx(INTENT)).resolves.toEqual({ status: 'Rejected' });
   });
 
   it('reports switching to the network the page asked for', async () => {

@@ -1,7 +1,7 @@
 import { AdenaExecutor } from '@inject/executor/executor';
 import {
   normalizeGnoConnectRpc,
-  parseGnoConnectInfo,
+  parseGnoConnectChainId,
 } from '@inject/message/methods/gno-connect';
 
 import { GnoConnectRequestError, toUserResponse } from './response';
@@ -44,27 +44,26 @@ function siteName(): string {
   return document.title || window.location.hostname;
 }
 
-/** The chain the page declares, when an intent does not name one itself. */
+/**
+ * The chain the page declares, when an intent does not name one itself.
+ *
+ * Reads the chain id tag alone. A page that declares only `gnoconnect:chainid`
+ * is doing the right thing — the wallet never uses a declared `rpc` — so it must
+ * resolve, which is why this does not go through `parseGnoConnectInfo`.
+ */
 function pageDeclaredChainId(): string {
-  return parseGnoConnectInfo()?.chainId ?? '';
+  return parseGnoConnectChainId();
 }
 
 /**
- * Resolves the network every request runs against, per the standard's Network
- * resolution.
+ * The chain the request selects, per the standard's Network resolution.
  *
  * `chainid` selects; the request's `rpc` plays no part. Adena signs and queries
  * through the endpoint the *user* configured for that chain, so a page cannot
  * choose the node that answers the `vm/qdoc` lookup deciding argument order, nor
  * the one that reports the sequence and gas the user is shown.
- *
- * A chain the user has not configured is `network_declined` rather than a silent
- * add: the standard requires an add to be its own approval, separate from and
- * before any signing approval, and a wallet that does not offer one answers
- * exactly this. Adena's existing `addNetwork` remains available to a dapp as
- * that separate step.
  */
-async function resolveNetwork(intents: GnoTransactionIntent[]): Promise<ResolvedNetwork> {
+function requestedChainId(intents: GnoTransactionIntent[]): string {
   const requested = intents.find((intent) => intent.chainid)?.chainid || pageDeclaredChainId();
 
   if (!requested) {
@@ -82,22 +81,30 @@ async function resolveNetwork(intents: GnoTransactionIntent[]): Promise<Resolved
     );
   }
 
-  const active = await readNetwork();
-  if (active.chainId !== requested) {
-    // Prompts the user. A decline is Rejected (network_declined); a chain the
-    // wallet does not have fails as UNADDED_NETWORK, likewise network_declined.
-    const switched = await new AdenaExecutor().switchNetwork(requested);
-    const result = toUserResponse(switched, () => null);
-    if (result.status === 'Rejected') {
-      throw new GnoConnectRequestError(
-        'network_declined',
-        `User declined switching to ${requested}`,
-      );
-    }
-    return readNetwork();
-  }
+  return requested;
+}
 
-  return active;
+/**
+ * Brings the wallet onto `requested`, prompting the user if it is not there.
+ *
+ * A chain the user has not configured is `network_declined` rather than a silent
+ * add: the standard requires an add to be its own approval, separate from and
+ * before any signing approval, and a wallet that does not offer one answers
+ * exactly this. Adena's existing `addNetwork` remains available to a dapp as
+ * that separate step.
+ */
+async function switchTo(requested: string): Promise<ResolvedNetwork> {
+  // Prompts the user. A decline is Rejected (network_declined); a chain the
+  // wallet does not have fails as UNADDED_NETWORK, likewise network_declined.
+  const switched = await new AdenaExecutor().switchNetwork(requested);
+  const result = toUserResponse(switched, () => null);
+  if (result.status === 'Rejected') {
+    throw new GnoConnectRequestError(
+      'network_declined',
+      `User declined switching to ${requested}`,
+    );
+  }
+  return readNetwork();
 }
 
 async function readNetwork(): Promise<ResolvedNetwork> {
@@ -114,18 +121,17 @@ async function readNetwork(): Promise<ResolvedNetwork> {
 }
 
 /**
- * Enforces the `signer` pin before anything is signed.
+ * Fails a request whose `signer` pin is not the account the wallet would use.
  *
- * Without it a page that connected as one account and rendered its address signs
- * as whatever account the user has since switched to, and only learns which from
- * the chain.
+ * The early half of enforcing the pin: it costs nothing and it keeps a request
+ * that cannot succeed from reaching an approval screen at all. It is *not* where
+ * the guarantee lives — this runs in the page world, before the popup exists, so
+ * the account it sees is not necessarily the one that ends up signing. The pin
+ * travels on in `TransactionParams`, and the approval screen checks it again
+ * against the account it is actually about to sign with. That second check is
+ * the enforcing one; this one only saves a pointless approval.
  */
-async function assertSigner(intents: GnoTransactionIntent[]): Promise<void> {
-  const pinned = intents.find((intent) => intent.signer)?.signer;
-  if (!pinned) {
-    return;
-  }
-
+async function assertSigner(pinned: string): Promise<void> {
   const response = await new AdenaExecutor().getAccount();
   const account = toUserResponse(response, (data) => (data as AccountResultLike)?.address ?? '');
   if (account.status === 'Rejected' || account.args !== pinned) {
@@ -166,8 +172,24 @@ async function prepare(
   intents: GnoTransactionIntent[],
 ): Promise<Awaited<ReturnType<typeof buildTransactionParams>>> {
   await ensureEstablished();
-  const network = await resolveNetwork(intents);
-  await assertSigner(intents);
+
+  const requested = requestedChainId(intents);
+  const active = await readNetwork();
+  const signer = intents.find((intent) => intent.signer)?.signer;
+
+  // Checked before the switch prompt, but only while we are still on the chain
+  // the page read the pin from. A request pinned to an account the wallet is not
+  // on fails either way, so prompting for a network switch first asks the user
+  // to answer for nothing. Across a switch the comparison stops being evidence —
+  // an account's address is prefixed per network, so the same key reads
+  // differently on the other side — hence no pre-check in that case. The
+  // approval screen enforces the pin either way.
+  if (signer && active.chainId === requested) {
+    await assertSigner(signer);
+  }
+
+  const network = active.chainId === requested ? active : await switchTo(requested);
+
   // Display only. A chain id is not unique — `dev` names every devnet — so a
   // declared endpoint we are not using is the only signal that `chainid` may
   // have selected a different network than the page meant. Shown, never used.
@@ -176,6 +198,7 @@ async function prepare(
     intents,
     network,
     declared ? normalizeGnoConnectRpc(declared) : undefined,
+    signer,
   );
 }
 

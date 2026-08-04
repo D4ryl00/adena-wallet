@@ -21,8 +21,10 @@ import { refreshSessionMetadataFromChain } from '@common/utils/session-guard-met
 import {
   createFaviconByHostname,
   decodeParameter,
+  formatAddress,
   parseParameters,
 } from '@common/utils/client-utils';
+import { toDisplayEndpoint } from '@common/utils/endpoint-display';
 import { validateInjectionDataWithAddress } from '@common/validation/validation-transaction';
 import { ApproveTransaction } from '@components/molecules';
 import useAppNavigate from '@hooks/use-app-navigate';
@@ -173,6 +175,77 @@ const ApproveSignTransactionContainer: React.FC = () => {
     return mapSessionGuardReasonToMessage(sessionGuardDecision.reason);
   }, [sessionGuardDecision]);
 
+  // This screen signs against the wallet's active network — that is the network
+  // the document is built for and the one the review row below reports. A
+  // request may name a network of its own: GnoConnect's provider resolves and
+  // switches before opening this screen, so it normally agrees, but a direct
+  // `window.adena` caller can name anything. Signing a document built for one
+  // chain while the request meant another is exactly what naming a chain is
+  // supposed to prevent, so say so and refuse rather than sign the wrong thing.
+  const isRequestedNetworkReady = useMemo(() => {
+    const networkInfo = requestData?.data?.networkInfo;
+    if (!networkInfo?.chainId || !networkInfo?.rpcUrl) {
+      return true;
+    }
+
+    return (
+      currentNetwork?.chainId === networkInfo.chainId &&
+      currentNetwork?.rpcUrl === networkInfo.rpcUrl
+    );
+  }, [currentNetwork?.chainId, currentNetwork?.rpcUrl, requestData?.data?.networkInfo]);
+
+  const requestedNetworkMismatchMessage = !isRequestedNetworkReady
+    ? `This request is for ${
+        requestData?.data?.networkInfo?.chainId ?? 'another network'
+      }. Switch networks in Adena to continue.`
+    : null;
+
+  // The address a GnoConnect request pinned as its signer. The provider checks
+  // it before opening this screen, but that check runs in the page world and
+  // against whatever account was current then; the standard's guarantee is about
+  // the signature, so it has to hold here too.
+  const requestedSigner = useMemo<string | null>(() => {
+    const value = requestData?.data?.signer;
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  }, [requestData?.data?.signer]);
+
+  const [signingAddress, setSigningAddress] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!currentAccount) {
+      setSigningAddress(null);
+      return undefined;
+    }
+
+    let abandoned = false;
+    getDappVisibleAddress(currentAccount, chain.bech32Prefix).then((address) => {
+      if (!abandoned) {
+        setSigningAddress(address);
+      }
+    });
+
+    return () => {
+      abandoned = true;
+    };
+  }, [currentAccount, chain.bech32Prefix]);
+
+  // Fails closed: until the address has resolved this is unmet, because "not yet
+  // known" is not "satisfied".
+  const signerPinUnmet = useMemo(() => {
+    if (!requestedSigner) {
+      return false;
+    }
+    return signingAddress !== requestedSigner;
+  }, [requestedSigner, signingAddress]);
+
+  const signerPinUnmetMessage = signerPinUnmet
+    ? `This request must be signed by ${formatAddress(
+        requestedSigner as string,
+      )}. Switch to that account in Adena to continue.`
+    : null;
+
+  const approvalBlocked = !isRequestedNetworkReady || signerPinUnmet;
+
   useEffect(() => {
     checkLockWallet();
   }, [walletService]);
@@ -196,7 +269,10 @@ const ApproveSignTransactionContainer: React.FC = () => {
   };
 
   useEffect(() => {
-    if (currentAccount && requestData && gnoProvider) {
+    // Not while the request names another network: the document would be built
+    // for the chain we are on, which is not the one the request asked for, and
+    // the screen would present it as if it were.
+    if (currentAccount && requestData && gnoProvider && isRequestedNetworkReady) {
       if (isAirgapAccount(currentAccount)) {
         navigate(RoutePath.ApproveSignFailed);
         return;
@@ -209,7 +285,7 @@ const ApproveSignTransactionContainer: React.FC = () => {
         }
       });
     }
-  }, [currentAccount, requestData, gnoProvider]);
+  }, [currentAccount, requestData, gnoProvider, isRequestedNetworkReady]);
 
   const validate = async (
     currentAccount: Account,
@@ -333,6 +409,11 @@ const ApproveSignTransactionContainer: React.FC = () => {
   };
 
   const signTransaction = async (): Promise<boolean> => {
+    // The enforcing check for the `signer` pin and the request's network: this
+    // is the last point before a signature exists.
+    if (approvalBlocked) {
+      return false;
+    }
     if (!document || !currentAccount || !wallet) {
       setResponse(
         InjectionMessageInstance.failure(
@@ -456,7 +537,7 @@ const ApproveSignTransactionContainer: React.FC = () => {
   };
 
   const onClickConfirm = (): void => {
-    if (!currentAccount) {
+    if (!currentAccount || approvalBlocked) {
       return;
     }
     // SessionAccount: refuse to sign if the guard rejected this request.
@@ -592,7 +673,10 @@ const ApproveSignTransactionContainer: React.FC = () => {
       contracts={transactionData?.contracts || []}
       memo={memo}
       hasMemo={hasMemo}
-      loading={transactionData === undefined}
+      // Only genuinely loading while the document is still being built. A
+      // network mismatch never resolves into one, so it is a banner, not a
+      // spinner.
+      loading={isRequestedNetworkReady && transactionData === undefined}
       processing={processing}
       done={done}
       logo={favicon}
@@ -614,7 +698,19 @@ const ApproveSignTransactionContainer: React.FC = () => {
       openScannerLink={openScannerLink}
       opened={visibleTransactionInfo}
       transactionData={JSON.stringify(document, null, 2)}
-      sessionGuardBannerMessage={sessionGuardBannerMessage}
+      network={{
+        name: currentNetwork?.networkName ?? '',
+        chainId: currentNetwork?.chainId ?? '',
+        rpcUrl: currentNetwork?.rpcUrl ?? '',
+        // Display-only, and set only when it disagrees with what we will use.
+        // Page-written text, so it is reduced to a parsed origin before it is
+        // shown — see toDisplayEndpoint.
+        declaredRpcUrl: toDisplayEndpoint(requestData?.data?.declaredRpcUrl),
+      }}
+      requiresHoldConfirmation={approvalBlocked}
+      sessionGuardBannerMessage={
+        requestedNetworkMismatchMessage || signerPinUnmetMessage || sessionGuardBannerMessage
+      }
     />
   );
 };

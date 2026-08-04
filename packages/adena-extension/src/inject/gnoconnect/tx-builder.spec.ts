@@ -226,3 +226,30 @@ describe('buildTransactionParams, declared endpoint', () => {
     expect(params.declaredRpcUrl).toBeUndefined();
   });
 });
+
+// Unlike the declared endpoint, the pin is carried to be *enforced*: the
+// approval screen refuses to sign unless the account it would sign with is this
+// one. The provider checks it too, but that happens in the page world before the
+// screen exists, and the standard's guarantee is about the signature.
+describe('buildTransactionParams, pinned signer', () => {
+  const network = { chainId: 'dev', rpcUrl: 'http://127.0.0.1:26657' };
+
+  it('carries the pin through to the request', async () => {
+    const params = await buildTransactionParams(
+      [intent({ args: [{ value: '2' }] })],
+      network,
+      undefined,
+      'g1abc',
+    );
+
+    expect(params.signer).toBe('g1abc');
+  });
+
+  it('carries no pin when the request named none', async () => {
+    const params = await buildTransactionParams([intent({ args: [{ value: '2' }] })], network);
+
+    // Absent rather than empty: an empty pin would be a pin nothing satisfies.
+    expect(params.signer).toBeUndefined();
+    expect('signer' in params).toBe(false);
+  });
+});

@@ -63,6 +63,24 @@ function toRejectCode(type: unknown): GnoErrorCode | undefined {
   return ERROR_CODES[String(type)];
 }
 
+/**
+ * Failures whose mapped code does not say enough on its own.
+ *
+ * `NOT_CONNECTED` is the case that matters. Adena gates every method on an
+ * established origin — including `getNetwork` and `getAccount`, which the
+ * standard does not tie to a connection, because answering them beforehand would
+ * disclose what the user has not agreed to disclose. The standard's vocabulary
+ * has no "not connected", and `no_signer` is the closest true statement: without
+ * a connection the page has no signer. But on a *network* query that code reads
+ * as if something were wrong with the user's accounts, so the message has to
+ * carry what the code cannot.
+ */
+const FAILURE_MESSAGES: Readonly<Record<string, string>> = {
+  [WalletResponseFailureType.NOT_CONNECTED]:
+    'This site is not connected to the wallet. Call connect() first; ' +
+    'Adena answers no request, including getNetwork, until the user has approved the site.',
+};
+
 export class GnoConnectError extends Error {
   public readonly type: string;
   /** The standard's enumerated reason. */
@@ -71,7 +89,11 @@ export class GnoConnectError extends Error {
   public readonly walletCode: number;
 
   constructor(response: WalletResponse<unknown>) {
-    super(response.message || `GnoConnect request failed: ${response.type}`);
+    super(
+      FAILURE_MESSAGES[String(response.type)] ||
+        response.message ||
+        `GnoConnect request failed: ${response.type}`,
+    );
     this.name = 'GnoConnectError';
     this.type = String(response.type);
     this.code = toErrorCode(response.type);

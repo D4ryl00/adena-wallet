@@ -22,7 +22,19 @@ import {
  * wallets installed cannot get at one of them. `window.adena` stays for existing
  * dApps, but it is no longer how a GnoConnect page finds Adena.
  */
-let announced = false;
+
+/**
+ * Marks a target as already announced on.
+ *
+ * On the target rather than in module scope, because module scope is exactly
+ * what a re-injection does not share: a second evaluation of the bundle gets a
+ * fresh copy of every module-level binding, so a `let announced` here would be
+ * `false` again and the page would receive a second announcement. The target
+ * — `window`, in the only case that matters — is the thing that survives.
+ */
+const ANNOUNCED_FLAG = '__adenaGnoConnectAnnounced';
+
+type AnnounceTarget = EventTarget & { [ANNOUNCED_FLAG]?: true };
 
 /**
  * @param target the event target to announce on. Defaults to `window`, which is
@@ -35,10 +47,20 @@ export function announceGnoWallet(target: EventTarget = window): void {
   // second `gno:requestWallet` listener and hand the page two entries with
   // different uuids for one wallet, which is exactly what `uuid` exists to
   // prevent. Announce once; the listener below covers every later request.
-  if (announced) {
+  const host = target as AnnounceTarget;
+  if (host[ANNOUNCED_FLAG]) {
     return;
   }
-  announced = true;
+
+  // Non-configurable and non-writable: the flag lives on an object the page can
+  // reach, and a page that could clear it could force the second announcement
+  // this guard exists to prevent.
+  Object.defineProperty(host, ANNOUNCED_FLAG, {
+    value: true,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
 
   const info: GnoWalletInfo = Object.freeze({
     // Unique per page load. Lets a page deduplicate our repeated announcements;

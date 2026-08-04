@@ -14,14 +14,15 @@ import {
 type Announce = (target?: EventTarget) => void;
 
 /**
- * `announceGnoWallet` is idempotent per module instance, so each test needs a
- * fresh registry — otherwise the second call in a test file is a no-op.
+ * Loads a fresh copy of the module, the way a re-injection would.
+ *
+ * The idempotency flag lives on the target, not in module scope, so this does
+ * *not* reset it — which is the point: re-evaluating the bundle must not buy a
+ * page a second announcement. Tests isolate by using a fresh target instead.
  */
 function freshAnnounce(): Announce {
   let announce: Announce = () => undefined;
   jest.isolateModules(() => {
-    // A static import would bind once for the whole file, defeating the point:
-    // the module must be re-evaluated so its idempotency flag resets.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     announce = require('./announce').announceGnoWallet;
   });
@@ -69,8 +70,6 @@ describe('announceGnoWallet', () => {
     expect(seen[0].info.uuid).toBe(seen[1].info.uuid);
   });
 
-  // A second evaluation of the injected script must not present the page with
-  // two entries for one wallet.
   it('is idempotent when called more than once', () => {
     const { target, seen, announce } = setup();
 
@@ -79,6 +78,37 @@ describe('announceGnoWallet', () => {
     target.dispatchEvent(new Event(GNO_REQUEST_WALLET_EVENT));
 
     expect(seen).toHaveLength(2); // one announce, one request — not doubled
+  });
+
+  // The case a module-scope flag silently missed: a re-injected bundle is a
+  // *new* module instance, so anything it remembers about having announced
+  // already is gone. The page would get two entries with different uuids for one
+  // wallet, which is the whole thing `uuid` exists to let it avoid.
+  it('stays idempotent across a re-evaluation of the module', () => {
+    const { target, seen, announce } = setup();
+    announce(target);
+
+    // A second, independent copy of the module — what a re-injection produces.
+    freshAnnounce()(target);
+    target.dispatchEvent(new Event(GNO_REQUEST_WALLET_EVENT));
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0].info.uuid).toBe(seen[1].info.uuid);
+  });
+
+  it('does not let the page clear the guard to force a second announcement', () => {
+    const { target, seen, announce } = setup();
+    announce(target);
+
+    // Everything on the target is reachable from the page. Deleting or
+    // overwriting the flag must not work.
+    expect(() => {
+      delete (target as unknown as Record<string, unknown>)['__adenaGnoConnectAnnounced'];
+    }).toThrow();
+
+    announce(target);
+
+    expect(seen).toHaveLength(1);
   });
 
   it('announces a UUIDv4 handle', () => {

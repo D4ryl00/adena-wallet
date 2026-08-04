@@ -55,6 +55,3 @@ deploy-latest/*
 deploy-firefox/*
 deploy-firefox-latest/*
 deploy-firefox-signed/*
-
-# Working log for the GnoConnect implementation — local notes, not part of the tree.
-GNOCONNECT_ADENA_IMPLEMENTATION.md

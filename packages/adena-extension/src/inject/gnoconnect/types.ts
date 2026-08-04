@@ -166,11 +166,13 @@ export interface GnoConnectProvider {
   sendTx(tx: GnoTransactionIntent): Promise<UserResponse<{ hash: string }>>;
 
   /**
-   * Multi-message extension. Adena builds multi-message transactions natively,
-   * so the standard's single-message baseline is a subset of what it can do.
-   * Announced as the in-page analogue of the `multi_msg` feature token.
+   * Multi-message extension: several messages in ONE transaction — one
+   * signature, one broadcast, one hash. Adena builds those natively, so the
+   * standard's single-message baseline is a subset of what it can do. Announced
+   * as the in-page analogue of the `multi_msg` feature token, and named for what
+   * the caller supplies, since what it sends is a transaction, singular.
    */
-  sendTxs(tx: GnoBatchIntent): Promise<UserResponse<{ hash: string }>>;
+  sendMsgs(tx: GnoBatchIntent): Promise<UserResponse<{ hash: string }>>;
 
   /** Sign without broadcasting. `signedtx` is base64 amino-binary, opaque. */
   signTx(tx: GnoTransactionIntent): Promise<UserResponse<{ signedtx: string }>>;

@@ -234,7 +234,7 @@ export function createGnoConnectProvider(): GnoConnectProvider {
       return submit(toBatch(tx));
     },
 
-    async sendTxs(tx) {
+    async sendMsgs(tx) {
       return submit(tx);
     },
 

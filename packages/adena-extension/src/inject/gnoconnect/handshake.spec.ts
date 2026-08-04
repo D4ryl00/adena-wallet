@@ -254,7 +254,7 @@ describe('GnoConnect handshake, end to end', () => {
     const { provider } = await discoverWallet();
 
     await expect(
-      provider.sendTxs({ msgs: [MSG, MSG], chainid: ACTIVE_CHAIN_ID }),
+      provider.sendMsgs({ msgs: [MSG, MSG], chainid: ACTIVE_CHAIN_ID }),
     ).resolves.toEqual({
       status: 'Approved',
       args: { hash: 'multi' },
@@ -270,7 +270,7 @@ describe('GnoConnect handshake, end to end', () => {
     const { provider } = await discoverWallet();
 
     await expect(
-      provider.sendTxs({ msgs: [], chainid: ACTIVE_CHAIN_ID }),
+      provider.sendMsgs({ msgs: [], chainid: ACTIVE_CHAIN_ID }),
     ).rejects.toThrow(/No transaction intent/);
   });
 
@@ -493,7 +493,7 @@ describe('GnoConnect handshake, end to end', () => {
     );
     const { provider } = await discoverWallet();
 
-    await expect(provider.sendTxs({ msgs: [MSG] })).resolves.toEqual({
+    await expect(provider.sendMsgs({ msgs: [MSG] })).resolves.toEqual({
       status: 'Approved',
       args: { hash: 'meta' },
     });

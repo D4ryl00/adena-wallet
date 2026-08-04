@@ -120,6 +120,23 @@ describe('toUserResponse', () => {
     }
   });
 
+  // Every method is gated on an approved origin, so this is the code a page sees
+  // first. Not `no_signer`: the wallet may hold plenty of accounts, and on a
+  // `getNetwork` that code sends the page looking for the wrong problem.
+  it('reports an unapproved origin as not_connected, and says how to fix it', () => {
+    try {
+      toUserResponse(
+        response({ status: 'failure', type: 'NOT_CONNECTED', code: 4000 }),
+        () => ({}),
+      );
+      fail('expected a GnoConnectError');
+    } catch (error) {
+      expect(error).toBeInstanceOf(GnoConnectError);
+      expect((error as GnoConnectError).code).toBe('not_connected');
+      expect((error as GnoConnectError).message).toMatch(/connect\(\)/);
+    }
+  });
+
   // Anything unmapped is the standard's catch-all, never a wrong specific code.
   it('falls back to tx_failed for an unmapped failure type', () => {
     try {

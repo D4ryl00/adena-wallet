@@ -97,6 +97,8 @@ export type GnoErrorCode =
   | 'network_declined'
   | 'signer_unavailable'
   | 'no_signer'
+  /** In-page only: the origin has not been approved and this method is gated on it. */
+  | 'not_connected'
   | 'unsupported_host'
   | 'tx_failed';
 

@@ -46,7 +46,11 @@ const ERROR_CODES: Readonly<Record<string, GnoErrorCode>> = {
   [WalletResponseFailureType.UNSUPPORTED_TYPE]: 'unsupported_host',
   [WalletResponseFailureType.NO_ACCOUNT]: 'no_signer',
   [WalletResponseFailureType.WALLET_LOCKED]: 'no_signer',
-  [WalletResponseFailureType.NOT_CONNECTED]: 'no_signer',
+  // Not `no_signer`: the wallet may hold plenty of accounts. Every method here
+  // is gated on the origin being approved, which the standard permits and names
+  // — telling a page its `getNetwork` failed for want of a signer would send it
+  // looking for a problem that is not there.
+  [WalletResponseFailureType.NOT_CONNECTED]: 'not_connected',
   [WalletResponseFailureType.ACCOUNT_MISMATCH]: 'signer_unavailable',
   // A declined switch or add is the user's answer, so it reaches the page as a
   // Rejected response — but it still carries a reason.
@@ -64,21 +68,17 @@ function toRejectCode(type: unknown): GnoErrorCode | undefined {
 }
 
 /**
- * Failures whose mapped code does not say enough on its own.
+ * Failures whose mapped code is worth expanding on.
  *
- * `NOT_CONNECTED` is the case that matters. Adena gates every method on an
- * established origin — including `getNetwork` and `getAccount`, which the
- * standard does not tie to a connection, because answering them beforehand would
- * disclose what the user has not agreed to disclose. The standard's vocabulary
- * has no "not connected", and `no_signer` is the closest true statement: without
- * a connection the page has no signer. But on a *network* query that code reads
- * as if something were wrong with the user's accounts, so the message has to
- * carry what the code cannot.
+ * `NOT_CONNECTED` carries the route out. The code says what happened; the
+ * message says what to do about it, which matters because Adena gates *every*
+ * method on an approved origin — `getNetwork` and `getAccount` included, since
+ * answering either beforehand discloses what the user has not agreed to
+ * disclose.
  */
 const FAILURE_MESSAGES: Readonly<Record<string, string>> = {
   [WalletResponseFailureType.NOT_CONNECTED]:
-    'This site is not connected to the wallet. Call connect() first; ' +
-    'Adena answers no request, including getNetwork, until the user has approved the site.',
+    'This site is not connected to the wallet. Call connect() and retry.',
 };
 
 export class GnoConnectError extends Error {

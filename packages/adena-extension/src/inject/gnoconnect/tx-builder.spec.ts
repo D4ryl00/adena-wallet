@@ -1,5 +1,14 @@
 import { GnoDocumentInfo } from '@common/provider/gno';
 
+// Only the zero-argument path reaches a node at all; every other form here is
+// resolved without one, which is the property those tests exist to hold.
+const mockGetRealmDocument = jest.fn();
+jest.mock('@common/provider/gno/gno-provider', () => ({
+  GnoProvider: jest.fn().mockImplementation(() => ({
+    getRealmDocument: (path: string): Promise<unknown> => mockGetRealmDocument(path),
+  })),
+}));
+
 import {
   buildTransactionParams,
   RealmDocumentError,
@@ -177,6 +186,44 @@ describe('buildTransactionParams, argument forms', () => {
     await expect(buildTransactionParams([], network)).rejects.toThrow(
       /No transaction intent/,
     );
+  });
+
+  // Supplying no arguments is neither form: the forms settle an order, and with
+  // no values there is no order to settle.
+  describe('a call supplying no arguments', () => {
+    afterEach(() => {
+      mockGetRealmDocument.mockReset();
+    });
+
+    // The case that makes this matter. A function declaring no parameters —
+    // `Increment()` and its kind — needs nothing from the network, so requiring
+    // a lookup would put the one shape that is trivially offline-signable behind
+    // a round trip.
+    it('signs when the realm document cannot be read', async () => {
+      mockGetRealmDocument.mockRejectedValue(new Error('unreachable node'));
+
+      const params = await buildTransactionParams([intent({ args: [] })], network);
+
+      expect(params.messages[0].value).toMatchObject({ args: [] });
+    });
+
+    it('still labels the parameters when the document is available', async () => {
+      // Worth the lookup when it works: the review screen can then name what the
+      // user has left to fill, rather than showing a bare call.
+      mockGetRealmDocument.mockResolvedValue(
+        realmDocument([
+          { name: 'bid', type: 'string' },
+          { name: 'title', type: 'string' },
+        ]),
+      );
+
+      const params = await buildTransactionParams([intent({ args: [] })], network);
+
+      expect(params.arguments).toEqual([
+        { index: 0, key: 'bid', value: '', type: 'string' },
+        { index: 1, key: 'title', value: '', type: 'string' },
+      ]);
+    });
   });
 
   // The network is the wallet's own, never one the page named — a page that

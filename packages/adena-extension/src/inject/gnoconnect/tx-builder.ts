@@ -6,7 +6,7 @@ import { GnoArgumentInfo } from '@inject/message/methods/gno-connect';
 import { ContractMessage, TransactionParams } from '@inject/types';
 
 import { GnoConnectRequestError } from './errors';
-import { GnoTransactionIntent, isNamedArgument } from './types';
+import { GnoMessageIntent, isNamedArgument } from './types';
 
 export class RealmDocumentError extends Error {
   constructor(message: string) {
@@ -22,16 +22,20 @@ export interface ResolvedNetwork {
 }
 
 /**
- * A call is named or positional, never both.
+ * A call is named or positional, never both — or supplies nothing, which is
+ * neither.
  *
  * Mixing has no coherent meaning: a named argument among positional ones has a
  * position knowable only through `vm/qdoc`, at which point the call needs the
  * network anyway and the positional form has bought nothing.
  */
-function argumentForm(intent: GnoTransactionIntent): 'named' | 'positional' {
+function argumentForm(intent: GnoMessageIntent): 'named' | 'positional' | 'none' {
   const args = intent.args ?? [];
   if (args.length === 0) {
-    return 'named';
+    // Neither form. The forms answer "in what order do these values go", and
+    // with no values there is no order to settle — so the lookup below is for
+    // labelling only, and its failure must not block signing.
+    return 'none';
   }
 
   const named = args.filter(isNamedArgument).length;
@@ -53,7 +57,7 @@ function argumentForm(intent: GnoTransactionIntent): 'named' | 'positional' {
  * but it must never reorder on the strength of it, and a failed lookup must not
  * block signing — so labelling happens elsewhere, not here.
  */
-function bindPositional(intent: GnoTransactionIntent): GnoArgumentInfo[] {
+function bindPositional(intent: GnoMessageIntent): GnoArgumentInfo[] {
   return (intent.args ?? []).map((arg, index) => ({
     index,
     key: `${index}`,
@@ -70,7 +74,7 @@ function bindPositional(intent: GnoTransactionIntent): GnoArgumentInfo[] {
  * signing something other than what was asked, with nothing on screen to say so.
  */
 export function resolveArguments(
-  intent: GnoTransactionIntent,
+  intent: GnoMessageIntent,
   realmDocument: GnoDocumentInfo,
 ): GnoArgumentInfo[] {
   const func = realmDocument.funcs.find((f) => f.name === intent.func);
@@ -110,7 +114,7 @@ export function resolveArguments(
 
 /** Builds the `/vm.m_call` message for a single intent, given resolved arguments. */
 export function toContractMessage(
-  intent: GnoTransactionIntent,
+  intent: GnoMessageIntent,
   resolvedArguments: GnoArgumentInfo[],
 ): ContractMessage {
   return {
@@ -138,7 +142,7 @@ export function toContractMessage(
  * the review screen shows for it.
  */
 export async function buildTransactionParams(
-  intents: GnoTransactionIntent[],
+  intents: GnoMessageIntent[],
   network: ResolvedNetwork,
   /**
    * The endpoint the page declared, for the review screen only. Deliberately a
@@ -166,6 +170,19 @@ export async function buildTransactionParams(
     let resolvedArguments: GnoArgumentInfo[];
     if (form === 'positional') {
       resolvedArguments = bindPositional(intent);
+    } else if (form === 'none') {
+      // Supplying nothing is not an error, and it must not need the network.
+      // A function declaring no parameters — `Increment()` and its kind — is the
+      // one call shape that needs no lookup at all, and requiring one would put
+      // it behind a round trip and out of reach of offline signing.
+      //
+      // The lookup is still worth attempting: with the document the review
+      // screen can name the parameters the user has left to fill. Without it,
+      // the screen shows a call that supplies no arguments, which is the honest
+      // thing to show and enough for the user to judge.
+      const provider = new GnoProvider(network.rpcUrl, network.chainId);
+      const realmDocument = await provider.getRealmDocument(intent.path).catch(() => null);
+      resolvedArguments = realmDocument ? resolveArguments(intent, realmDocument) : [];
     } else {
       const provider = new GnoProvider(network.rpcUrl, network.chainId);
       const realmDocument = await provider.getRealmDocument(intent.path);

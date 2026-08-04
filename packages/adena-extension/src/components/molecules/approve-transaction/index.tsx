@@ -48,9 +48,7 @@ export interface ApproveTransactionProps {
    * chain — display-only, and never used to decide anything.
    */
   network?: {
-    /** The wallet's label, when it has one. A network is identified by the
-     * other two; not every network carries a name, and one added from a request
-     * arrives with none. */
+    /** The wallet's label, when it has one; a network is identified by the other two. */
     name?: string;
     chainId: string;
     rpcUrl: string;
@@ -334,10 +332,7 @@ export const ApproveTransaction: React.FC<ApproveTransactionProps> = ({
         <div className='network-wrapper row'>
           <span className='key'>Network:</span>
           <span className='value'>
-            {/* The chain id and the endpoint identify the network; the name is a
-                label the wallet may not have. Without one the parenthesis has
-                nothing to qualify, so the id stands on its own rather than
-                trailing an empty space. */}
+            {/* Without a name the parenthesis has nothing to qualify. */}
             {network.name ? `${network.name} (${network.chainId})` : network.chainId} —{' '}
             {network.rpcUrl}
           </span>

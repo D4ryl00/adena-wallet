@@ -8,17 +8,10 @@ import {
 import { GnoErrorCode, UserResponse } from './types';
 
 /**
- * The standard splits an unhappy outcome in two, where Adena has a single
- * `failure` status:
- *
- * - The user declining is an *answer*: `{ status: 'Rejected' }`, a resolved
- *   promise. Adena signals this with `WalletResponseRejectType` (code 4000).
- * - Anything else — locked wallet, no account, malformed request, a broadcast
- *   that failed — is a *genuine failure* and rejects the promise.
- *
- * Mapping on the reject-type enum rather than on `code` keeps this honest as the
- * SDK grows: a new failure type is a thrown error (a page's catch branch already
- * handles it), never a silent "the user said no".
+ * The user declining is an answer — a resolved `Rejected` — and anything else is
+ * a genuine failure that rejects the promise. Keyed on the reject-type enum, not
+ * on `code`, so a new SDK failure type surfaces as a throw and never as a silent
+ * "the user said no".
  */
 const REJECT_TYPES: ReadonlySet<string> = new Set<string>(
   Object.values(WalletResponseRejectType),
@@ -31,13 +24,8 @@ const BENIGN_FAILURE_TYPES: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
- * Adena's failure types, mapped onto the standard's enumerated codes.
- *
- * The standard carries one error vocabulary for both transports, so a page's
- * handling is identical whether it called the provider or handed off a launch
- * link. Anything unmapped is `tx_failed`, the standard's catch-all for "the
- * wallet could not sign or broadcast" — never something more specific, since a
- * wrong specific code is worse than an honest general one.
+ * Adena's failure types on the standard's codes. Anything unmapped is
+ * `tx_failed`: a wrong specific code is worse than an honest general one.
  */
 const ERROR_CODES: Readonly<Record<string, GnoErrorCode>> = {
   [WalletResponseFailureType.INVALID_FORMAT]: 'invalid_request',
@@ -46,10 +34,8 @@ const ERROR_CODES: Readonly<Record<string, GnoErrorCode>> = {
   [WalletResponseFailureType.UNSUPPORTED_TYPE]: 'unsupported_host',
   [WalletResponseFailureType.NO_ACCOUNT]: 'no_signer',
   [WalletResponseFailureType.WALLET_LOCKED]: 'no_signer',
-  // Not `no_signer`: the wallet may hold plenty of accounts. Every method here
-  // is gated on the origin being approved, which the standard permits and names
-  // — telling a page its `getNetwork` failed for want of a signer would send it
-  // looking for a problem that is not there.
+  // Not `no_signer`: the wallet may hold plenty of accounts, it just has no
+  // agreement to talk to this origin.
   [WalletResponseFailureType.NOT_CONNECTED]: 'not_connected',
   [WalletResponseFailureType.ACCOUNT_MISMATCH]: 'signer_unavailable',
   // A declined switch or add is the user's answer, so it reaches the page as a
@@ -67,15 +53,7 @@ function toRejectCode(type: unknown): GnoErrorCode | undefined {
   return ERROR_CODES[String(type)];
 }
 
-/**
- * Failures whose mapped code is worth expanding on.
- *
- * `NOT_CONNECTED` carries the route out. The code says what happened; the
- * message says what to do about it, which matters because Adena gates *every*
- * method on an approved origin — `getNetwork` and `getAccount` included, since
- * answering either beforehand discloses what the user has not agreed to
- * disclose.
- */
+/** Failures whose code says what happened but not what to do about it. */
 const FAILURE_MESSAGES: Readonly<Record<string, string>> = {
   [WalletResponseFailureType.NOT_CONNECTED]:
     'This site is not connected to the wallet. Call connect() and retry.',
@@ -103,12 +81,7 @@ export class GnoConnectError extends Error {
 
 export { GnoConnectRequestError } from './errors';
 
-/**
- * Maps an Adena `WalletResponse` onto the standard's `UserResponse`.
- *
- * @param response the wallet's answer
- * @param extract  builds the `args` payload from a successful response
- */
+/** @param extract builds the `args` payload from a successful response. */
 export function toUserResponse<D, T>(
   response: WalletResponse<D>,
   extract: (data: D) => T,

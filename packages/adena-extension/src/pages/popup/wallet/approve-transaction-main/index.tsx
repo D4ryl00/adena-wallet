@@ -176,11 +176,8 @@ const ApproveTransactionContainer: React.FC = () => {
     return !!requestedSignerAccountId && !!wallet && !signingAccount;
   }, [requestedSignerAccountId, signingAccount, wallet]);
 
-  // The address a GnoConnect request pinned as its signer. The provider checks
-  // it too, but that check runs in the page world before this window exists —
-  // "MUST sign as that identity and MUST NOT sign as another" is a property of
-  // the signature, so it also has to hold here, against the account this screen
-  // is about to sign with.
+  // The provider checks the pin too, but in the page world before this window
+  // exists. The guarantee is about the signature, so it holds here as well.
   const requestedSigner = useMemo<string | null>(() => {
     const value = requestData?.data?.signer;
     return typeof value === 'string' && value.length > 0 ? value : null;
@@ -206,8 +203,7 @@ const ApproveTransactionContainer: React.FC = () => {
     };
   }, [signingAccount, chain.bech32Prefix]);
 
-  // Fails closed: until the address has resolved this is unmet, because "not yet
-  // known" is not "satisfied".
+  // Fails closed: unmet until the address resolves.
   const signerPinUnmet = useMemo(() => {
     if (!requestedSigner) {
       return false;
@@ -224,13 +220,9 @@ const ApproveTransactionContainer: React.FC = () => {
   const currentNetwork: NetworkMetainfo = useMemo(() => {
     const networkInfo = requestData?.data?.networkInfo;
     if (!!networkInfo?.chainId && !!networkInfo?.rpcUrl) {
-      // The request carries a chain id and an endpoint but no human-readable
-      // name, and the review screen has to show one — an empty name renders as
-      // " (test5) — https://…". The wallet's own name for the network is the
-      // right one to borrow, but only once the two describe the same network:
-      // until they agree, approval is blocked and the banner explains the
-      // mismatch, so labelling the request with the other network's name would
-      // be the one thing on screen actively contradicting it.
+      // Borrow the wallet's name for the network, but only once the two agree:
+      // while they do not, the mismatch banner is up and naming the other
+      // network would contradict it.
       const named =
         currentWalletNetwork?.chainId === networkInfo.chainId &&
         currentWalletNetwork?.rpcUrl === networkInfo.rpcUrl
@@ -1026,9 +1018,7 @@ const ApproveTransactionContainer: React.FC = () => {
         name: currentNetwork.networkName,
         chainId: currentNetwork.chainId,
         rpcUrl: currentNetwork.rpcUrl,
-        // Display-only, and set only when it disagrees with what we will use.
-        // Page-written text, so it is reduced to a parsed origin before it is
-        // shown — see toDisplayEndpoint.
+        // Page-written text, reduced to a parsed origin before it is shown.
         declaredRpcUrl: toDisplayEndpoint(requestData?.data?.declaredRpcUrl),
       }}
       sessionGuardBannerMessage={

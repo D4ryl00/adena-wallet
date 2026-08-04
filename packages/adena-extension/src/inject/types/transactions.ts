@@ -68,25 +68,17 @@ export type TransactionParams = {
     rpcUrl: string;
   };
   /**
-   * The endpoint the *page* declared, when it differs from the one the wallet
-   * will actually use for this chain.
-   *
-   * **Display only, and untrusted.** Nothing that builds, queries or signs may
-   * read this: a page choosing the node is the bug the resolution rules exist to
-   * prevent. It is carried solely so the review screen can show the divergence,
-   * which is the only signal available that a non-unique chain id (`dev` names
-   * every devnet) selected a different network than the page meant.
+   * The endpoint the *page* declared, when it differs from the one in use.
+   * Display only and untrusted: nothing that builds, queries or signs may read
+   * it. Carried so the review screen can show a divergence, the only signal that
+   * a non-unique chain id picked a different network than the page meant.
    */
   declaredRpcUrl?: string;
   /**
-   * The bech32 address the request pinned as its signer.
-   *
-   * Unlike `declaredRpcUrl` this one is enforced: the approval screen refuses to
-   * sign unless the account it would sign with resolves to exactly this address.
-   * Checking it only where the request is made is not enough — the check and the
-   * signature happen in different worlds and at different times, and "MUST sign
-   * as that identity and MUST NOT sign as another" is a property of the
-   * signature, so it has to hold where the signature is produced.
+   * The bech32 address the request pinned as its signer. Enforced, unlike
+   * `declaredRpcUrl`: the approval screen refuses to sign unless the account it
+   * would sign with resolves to it. The check has to happen where the signature
+   * is produced, not where the request is made.
    */
   signer?: string;
   arguments?: GnoArgumentInfo[] | null;

@@ -13,18 +13,10 @@ const UNSIGNED_INTEGER_TYPES = new Set(['uint', 'uint8', 'uint16', 'uint32', 'ui
 const FLOAT_TYPES = new Set(['float32', 'float64']);
 
 /**
- * Types a blank cannot be a value of.
- *
- * An empty string is a legitimate `string` argument — clearing a field is a real
- * thing to ask for — so a blank there is a value the user chose, not an omission.
- * For a number, a bool or an address it is neither: the parameter was simply
- * never filled in. Every `MsgCall` argument is a string on the wire, so nothing
- * downstream catches it; the call is broadcast, the VM fails to convert, and the
- * user has paid gas to be told what the review screen could have said.
- *
- * A blank on a type not listed here — a struct, a slice, anything we do not
- * check — is left alone, for the same reason those types are not validated at
- * all: we do not know enough about them to call it wrong.
+ * Types a blank cannot be a value of. For a `string` it can — clearing a field
+ * is a real request — but for a number, bool or address a blank means the
+ * parameter was never filled in. Every MsgCall argument is a string on the wire,
+ * so nothing downstream catches it before the user has paid gas.
  */
 const VALUE_REQUIRED_TYPES: ReadonlySet<string> = new Set<string>([
   ...INTEGER_TYPES,
@@ -34,7 +26,7 @@ const VALUE_REQUIRED_TYPES: ReadonlySet<string> = new Set<string>([
   'address',
 ]);
 
-/** True when the value is blank and its type cannot be blank — an unfilled argument. */
+/** Blank, on a type that cannot be blank: an unfilled argument. */
 export function isMissingArgument(value: string, gnoType: string | undefined): boolean {
   return value === '' && !!gnoType && VALUE_REQUIRED_TYPES.has(gnoType);
 }
@@ -77,7 +69,7 @@ function validateArgument(value: string, gnoType: string): string | undefined {
     return isBech32Address(value.trim()) ? undefined : 'Expected a valid address';
   }
 
-  // A string, or a type we do not check. Anything is a value, including nothing.
+  // A string, or a type we do not check.
   return undefined;
 }
 
@@ -110,8 +102,7 @@ export function validateMessageArguments(
       const argValue = args[argInfo.index];
       if (argValue === undefined || !argInfo.type) continue;
 
-      // Said apart from "invalid", because they are different problems and the
-      // fix differs: one value is wrong, the other was never given.
+      // Apart from "invalid": one value is wrong, the other was never given.
       if (isMissingArgument(argValue, argInfo.type)) {
         messageErrors[i] = `Missing argument: "${argInfo.key}"`;
         break;

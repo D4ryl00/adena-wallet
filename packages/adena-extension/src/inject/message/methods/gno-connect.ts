@@ -73,16 +73,9 @@ export function parseGnoConnectInfo(): GnoConnectInfo | null {
 }
 
 /**
- * Reads `gnoconnect:chainid` on its own.
- *
- * Deliberately separate from `parseGnoConnectInfo`, which requires *both* tags
- * because its consumer — the gnoweb event watcher — has nothing to do without an
- * endpoint. Network resolution wants the opposite: `chainid` selects the
- * network, and `rpc` is the one field the wallet is forbidden to act on, so
- * gating the chain id on an endpoint we will never use is backwards. A page that
- * declares only the chain — the correct thing for it to do — resolves fine.
- *
- * @returns the declared chain id, or '' when the page declares none.
+ * Separate from `parseGnoConnectInfo`, which requires both tags for the gnoweb
+ * event watcher: gating the chain id on an endpoint the wallet is forbidden to
+ * act on is backwards. Returns '' when the page declares none.
  */
 export function parseGnoConnectChainId(): string {
   if (document === null) {
@@ -102,14 +95,9 @@ export function parseGnoConnectChainId(): string {
 }
 
 /**
- * Normalizes a gnoconnect RPC endpoint (declared via meta tag) into a fetchable
- * http(s) URL.
- *
- * gnoweb may declare the RPC with an http(s) scheme (kept as-is), a non-http
- * scheme such as `tcp://` (as local gno nodes commonly do), or no scheme at all.
- * Downstream RPC clients (tm2-rpc HttpClient, fetch, axios) reject anything
- * without an http(s) protocol, so any non-http input has its scheme replaced:
- * loopback hosts map to http://, all others to https://.
+ * Into a fetchable http(s) URL. gnoweb may declare `tcp://`, as local gno nodes
+ * do, or no scheme at all; downstream clients reject anything but http(s), so
+ * loopback hosts map to http:// and everything else to https://.
  */
 export function normalizeGnoConnectRpc(url: string): string {
   const trimmedUrl = url.trim();

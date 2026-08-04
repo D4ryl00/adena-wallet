@@ -175,13 +175,10 @@ const ApproveSignTransactionContainer: React.FC = () => {
     return mapSessionGuardReasonToMessage(sessionGuardDecision.reason);
   }, [sessionGuardDecision]);
 
-  // This screen signs against the wallet's active network — that is the network
-  // the document is built for and the one the review row below reports. A
-  // request may name a network of its own: GnoConnect's provider resolves and
-  // switches before opening this screen, so it normally agrees, but a direct
-  // `window.adena` caller can name anything. Signing a document built for one
-  // chain while the request meant another is exactly what naming a chain is
-  // supposed to prevent, so say so and refuse rather than sign the wrong thing.
+  // This screen signs against the wallet's active network. A request may name
+  // one of its own — the provider switches before opening, but a direct
+  // `window.adena` caller can name anything — and signing a document built for
+  // one chain while the request meant another is what naming a chain prevents.
   const isRequestedNetworkReady = useMemo(() => {
     const networkInfo = requestData?.data?.networkInfo;
     if (!networkInfo?.chainId || !networkInfo?.rpcUrl) {
@@ -200,10 +197,9 @@ const ApproveSignTransactionContainer: React.FC = () => {
       }. Switch networks in Adena to continue.`
     : null;
 
-  // The address a GnoConnect request pinned as its signer. The provider checks
-  // it before opening this screen, but that check runs in the page world and
-  // against whatever account was current then; the standard's guarantee is about
-  // the signature, so it has to hold here too.
+  // The provider checks the pin before opening this screen, but in the page
+  // world against whatever account was current then. The guarantee is about the
+  // signature, so it holds here too.
   const requestedSigner = useMemo<string | null>(() => {
     const value = requestData?.data?.signer;
     return typeof value === 'string' && value.length > 0 ? value : null;
@@ -229,8 +225,7 @@ const ApproveSignTransactionContainer: React.FC = () => {
     };
   }, [currentAccount, chain.bech32Prefix]);
 
-  // Fails closed: until the address has resolved this is unmet, because "not yet
-  // known" is not "satisfied".
+  // Fails closed: unmet until the address resolves.
   const signerPinUnmet = useMemo(() => {
     if (!requestedSigner) {
       return false;
@@ -270,8 +265,7 @@ const ApproveSignTransactionContainer: React.FC = () => {
 
   useEffect(() => {
     // Not while the request names another network: the document would be built
-    // for the chain we are on, which is not the one the request asked for, and
-    // the screen would present it as if it were.
+    // for the chain we are on and presented as if it were the one asked for.
     if (currentAccount && requestData && gnoProvider && isRequestedNetworkReady) {
       if (isAirgapAccount(currentAccount)) {
         navigate(RoutePath.ApproveSignFailed);
@@ -409,8 +403,7 @@ const ApproveSignTransactionContainer: React.FC = () => {
   };
 
   const signTransaction = async (): Promise<boolean> => {
-    // The enforcing check for the `signer` pin and the request's network: this
-    // is the last point before a signature exists.
+    // The enforcing check: the last point before a signature exists.
     if (approvalBlocked) {
       return false;
     }
@@ -673,9 +666,7 @@ const ApproveSignTransactionContainer: React.FC = () => {
       contracts={transactionData?.contracts || []}
       memo={memo}
       hasMemo={hasMemo}
-      // Only genuinely loading while the document is still being built. A
-      // network mismatch never resolves into one, so it is a banner, not a
-      // spinner.
+      // A network mismatch never resolves into a document, so it is a banner.
       loading={isRequestedNetworkReady && transactionData === undefined}
       processing={processing}
       done={done}
@@ -702,9 +693,7 @@ const ApproveSignTransactionContainer: React.FC = () => {
         name: currentNetwork?.networkName ?? '',
         chainId: currentNetwork?.chainId ?? '',
         rpcUrl: currentNetwork?.rpcUrl ?? '',
-        // Display-only, and set only when it disagrees with what we will use.
-        // Page-written text, so it is reduced to a parsed origin before it is
-        // shown — see toDisplayEndpoint.
+        // Page-written text, reduced to a parsed origin before it is shown.
         declaredRpcUrl: toDisplayEndpoint(requestData?.data?.declaredRpcUrl),
       }}
       requiresHoldConfirmation={approvalBlocked}

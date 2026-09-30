@@ -3,6 +3,7 @@ import {
   GNO_CHAIN_ID_META_TAG,
   GNO_CONNECT_PREFIX,
   GNO_RPC_META_TAG,
+  GNO_TXDOMAINS_META_TAG,
 } from '@common/constants/metatag.constant';
 import { hasHttpProtocol } from '@common/provider/gno/utils';
 
@@ -78,20 +79,29 @@ export function parseGnoConnectInfo(): GnoConnectInfo | null {
  * act on is backwards. Returns '' when the page declares none.
  */
 export function parseGnoConnectChainId(): string {
+  return readGnoConnectMeta(GNO_CHAIN_ID_META_TAG) ?? '';
+}
+
+/** `gnoconnect:txdomains` as trimmed entries, or null when the page declares none. */
+export function parseGnoConnectTxDomains(): string[] | null {
+  const declared = readGnoConnectMeta(GNO_TXDOMAINS_META_TAG);
+  return declared === null ? null : declared.split(',').map((domain) => domain.trim());
+}
+
+/** A meta tag's content, the last one winning; null when absent. */
+function readGnoConnectMeta(name: string): string | null {
   if (document === null) {
-    return '';
+    return null;
   }
 
-  const metas = document?.querySelectorAll('meta') || [];
-
-  let chainId = '';
-  metas.forEach((meta) => {
-    if (meta.getAttribute('name') === GNO_CHAIN_ID_META_TAG) {
-      chainId = meta.getAttribute('content') || '';
+  let content: string | null = null;
+  document?.querySelectorAll('meta').forEach((meta) => {
+    if (meta.getAttribute('name') === name) {
+      content = meta.getAttribute('content') || '';
     }
   });
 
-  return chainId;
+  return content;
 }
 
 /**

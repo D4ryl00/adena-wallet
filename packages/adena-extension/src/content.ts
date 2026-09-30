@@ -3,6 +3,8 @@ import { EventMessageData } from '@inject/message';
 import { CommandMessageData } from '@inject/message/command-message';
 import { GnoSessionUpdateMessage } from '@inject/message/methods/gno-session';
 import { GnoWebEventWatcherInterceptor } from '@inject/message/methods/interceptors';
+import { installNoScriptFallback } from '@inject/gnoconnect/fallback';
+import { GNO_STATE_HINT_EVENT, GNO_STATE_HINT_STATUS } from '@inject/gnoconnect/types';
 
 const loadScript = (): void => {
   const container = document.head || document.documentElement;
@@ -47,6 +49,11 @@ const initExtensionListener = (): void => {
         window.dispatchEvent(changedAccountEvent);
         sendResponse({ received: true });
         return;
+      }
+
+      // Payload-free: the provider re-reads state itself, so nothing here is trusted.
+      if ((message as { status?: string }).status === GNO_STATE_HINT_STATUS) {
+        window.dispatchEvent(new Event(GNO_STATE_HINT_EVENT));
       }
 
       sendResponse({ received: true });
@@ -100,13 +107,8 @@ const sendMessage = async (event: MessageEvent): Promise<void> => {
  * `address:changed`) to keep the wallet's gno session in sync with what the user
  * is editing on the page.
  *
- * This observes; it does not intercept. GnoConnect forbids a wallet from
- * cancelling the page's clicks and submits to sign on the user's behalf — that
- * makes the choice invisibly and binds the wallet to one site's DOM — so the
- * anchor and form-submit interceptors are gone. Listening to events the page
- * deliberately dispatches, and cancelling nothing, is not that: the page stays in
- * control of its own submit, and signing still begins with an explicit call to
- * the announced provider.
+ * This observes and cancels nothing. The only interception is the no-script
+ * fallback, which stands down once the page dispatches `gno:requestWallet`.
  */
 const initGnoWebEventWatcher = (): void => {
   const watcher = new GnoWebEventWatcherInterceptor((message: GnoSessionUpdateMessage) => {
@@ -145,7 +147,14 @@ const sendGnoSessionUpdate = async (message: GnoSessionUpdateMessage): Promise<v
   }
 };
 
-initGnoWebEventWatcher();
+// Runs at `document_start`: the fallback must hear the page's first request,
+// while the watcher reads `gnoconnect:*` metas that are not parsed yet.
+installNoScriptFallback();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initGnoWebEventWatcher, { once: true });
+} else {
+  initGnoWebEventWatcher();
+}
 loadScript();
 initListener();
 initExtensionListener();

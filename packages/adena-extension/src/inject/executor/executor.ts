@@ -74,6 +74,9 @@ import { InjectionMessage, InjectionMessageInstance } from '../message';
 
 type Params = { [key in string]: any };
 
+/** Delivers one request and resolves with the wallet's final reply to it. */
+export type ExecutorTransport = (request: InjectionMessage) => Promise<InjectionMessage>;
+
 export class AdenaExecutor {
   private eventKey;
 
@@ -89,7 +92,12 @@ export class AdenaExecutor {
 
   private static instance: AdenaExecutor | undefined = new AdenaExecutor();
 
-  constructor() {
+  /**
+   * @param transport delivers a request where `window` messaging cannot, e.g.
+   * from the background on a page whose scripts are blocked. It must stamp the
+   * request's origin itself.
+   */
+  constructor(private readonly transport?: ExecutorTransport) {
     this.eventKey = uuidv4();
     this.isListen = false;
   }
@@ -514,6 +522,13 @@ export class AdenaExecutor {
   private sendEventMessage = <T = unknown>(
     eventMessage: InjectionMessage,
   ): Promise<WalletResponse<T>> => {
+    if (this.transport) {
+      return this.transport({ ...eventMessage, key: this.eventKey }).then(
+        ({ status, data, code, message, type }) =>
+          ({ status, data, code, message, type }) as WalletResponse<T>,
+      );
+    }
+
     this.listen();
     this.eventMessage = {
       ...eventMessage,

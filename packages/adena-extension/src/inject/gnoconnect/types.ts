@@ -116,9 +116,46 @@ export interface GnoConnectProvider {
   getNetwork(): Promise<UserResponse<GnoNetwork>>;
 
   switchNetwork(chainid: string): Promise<UserResponse<{ chainid: string }>>;
+
+  /** Subscribes to wallet-side changes; returns the unsubscribe function. */
+  on<E extends keyof GnoProviderEvents>(
+    event: E,
+    listener: (detail: GnoProviderEvents[E]) => void,
+  ): () => void;
 }
+
+/** What the wallet tells an approved origin when the user changes something. */
+export interface GnoProviderEvents {
+  accountChanged: GnoAccount;
+  networkChanged: GnoNetwork;
+  disconnect: null;
+}
+
+/**
+ * Internal, payload-free nudge from the extension to the provider: "state may
+ * have changed, re-read it". The page can forge it, which only costs a re-read.
+ */
+export const GNO_STATE_HINT_EVENT = 'adena:gnoconnect:state';
+export const GNO_STATE_HINT_STATUS = 'gnoconnectHint';
 
 export interface GnoWalletAnnouncement {
   info: GnoWalletInfo;
   provider: GnoConnectProvider;
 }
+
+/**
+ * The no-script fallback's request to the background. The content script only
+ * parses; the provider runs in the background, since a page with scripts
+ * blocked cannot load it, not even as a module the content script imports.
+ */
+export const GNO_FALLBACK_SEND_TX = 'GNOCONNECT_FALLBACK_SEND_TX';
+
+export interface FallbackSendTx {
+  type: typeof GNO_FALLBACK_SEND_TX;
+  intent: GnoTransactionIntent;
+  siteName: string;
+}
+
+export type FallbackReply =
+  | { response: UserResponse<{ hash: string }> }
+  | { error: { code?: GnoErrorCode; message: string } };

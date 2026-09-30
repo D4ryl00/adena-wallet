@@ -2,6 +2,9 @@ import { AlarmKey, SCHEDULE_ALARMS } from '@common/constants/alarm-key.constant'
 import { TransactionEventStore } from '@common/event-store';
 import { MemoryProvider } from '@common/provider/memory/memory-provider';
 import { AUTO_LOCK_TRIGGERED_MESSAGE } from '@common/utils/auto-lock-timer';
+import { ExecutorTransport } from '@inject/executor/executor';
+import { answerFallbackSendTx, isFallbackSendTx } from '@inject/gnoconnect/fallback-background';
+import { broadcastGnoConnectHint, isGnoConnectStateChange } from '@inject/gnoconnect/hint';
 import { CommandHandler } from '@inject/message/command-handler';
 import { CommandMessageData, isCommandMessageData } from '@inject/message/command-message';
 import { clearInMemoryKey } from '@inject/message/commands/encrypt';
@@ -304,6 +307,14 @@ chrome.runtime.onInstalled.addListener((details) => {
   }
 });
 
+// One place for every writer (popup, approvals, removal, reset): GnoConnect
+// pages re-read their account, network and connection when any of them moves.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (isGnoConnectStateChange(changes, area)) {
+    broadcastGnoConnectHint();
+  }
+});
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   try {
     const currentTime = new Date().getTime();
@@ -387,6 +398,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (isCommandMessageData(message)) {
     CommandHandler.createHandler(inMemoryProvider, message, sender, sendResponse);
+    return true;
+  }
+
+  // The no-script fallback: requests go through the same handler a page's would,
+  // stamped with the sender's real origin rather than anything the page declared.
+  if (isFallbackSendTx(message)) {
+    const origin = new URL(sender.url ?? sender.tab?.url ?? 'about:blank');
+    const dispatch: ExecutorTransport = (request) =>
+      new Promise((resolve) => {
+        const stamped = { ...request, protocol: origin.protocol, hostname: origin.hostname };
+        MessageHandler.createHandler(inMemoryProvider, stamped, sender, (response) =>
+          sendResponseWithNotification(response, stamped, resolve),
+        );
+      });
+    answerFallbackSendTx(message, dispatch).then(sendResponse);
     return true;
   }
 

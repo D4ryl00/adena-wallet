@@ -1,9 +1,10 @@
-import { AdenaExecutor } from '@inject/executor/executor';
+import { AdenaExecutor, ExecutorTransport } from '@inject/executor/executor';
 import {
   normalizeGnoConnectRpc,
   parseGnoConnectChainId,
 } from '@inject/message/methods/gno-connect';
 
+import { createProviderEvents, Peek } from './events';
 import { GnoConnectRequestError, toUserResponse } from './response';
 import { buildTransactionParams, ResolvedNetwork } from './tx-builder';
 import {
@@ -36,18 +37,32 @@ interface SignResultLike {
   encodedTransaction?: string;
 }
 
-// Cosmetic only: the approval shows the origin, which the executor attaches and
-// the page cannot forge.
-function siteName(): string {
-  return document.title || window.location.hostname;
+/** Where the provider runs: the page, or the background acting for a page. */
+export interface ProviderHost {
+  executor(): AdenaExecutor;
+  /** Cosmetic only: the approval shows the origin, which the page cannot forge. */
+  siteName(): string;
+  /** `gnoconnect:chainid` alone: the wallet never uses a declared `rpc`. */
+  declaredChainId(): string;
 }
 
-/**
- * Reads the chain id tag alone, not `parseGnoConnectInfo`: a page declaring only
- * `gnoconnect:chainid` is correct, since the wallet never uses a declared `rpc`.
- */
-function pageDeclaredChainId(): string {
-  return parseGnoConnectChainId();
+const pageHost: ProviderHost = {
+  executor: () => new AdenaExecutor(),
+  siteName: () => document.title || window.location.hostname,
+  declaredChainId: parseGnoConnectChainId,
+};
+
+/** A host whose requests travel over `transport` instead of `window` messaging. */
+export function transportHost(
+  transport: ExecutorTransport,
+  siteName: string,
+  declaredChainId: string,
+): ProviderHost {
+  return {
+    executor: () => new AdenaExecutor(transport),
+    siteName: () => siteName,
+    declaredChainId: () => declaredChainId,
+  };
 }
 
 /**
@@ -55,8 +70,8 @@ function pageDeclaredChainId(): string {
  * could choose the node would choose the `vm/qdoc` document deciding argument
  * order, and the sequence and gas the user is shown.
  */
-function requestedChainId(batch: GnoBatchIntent): string {
-  const requested = batch.chainid || pageDeclaredChainId();
+function requestedChainId(host: ProviderHost, batch: GnoBatchIntent): string {
+  const requested = batch.chainid || host.declaredChainId();
 
   if (!requested) {
     throw new GnoConnectRequestError(
@@ -73,8 +88,8 @@ function requestedChainId(batch: GnoBatchIntent): string {
  * wallet does not have: adding one must be its own approval, which `addNetwork`
  * remains available for.
  */
-async function switchTo(requested: string): Promise<ResolvedNetwork> {
-  const switched = await new AdenaExecutor().switchNetwork(requested);
+async function switchTo(host: ProviderHost, requested: string): Promise<ResolvedNetwork> {
+  const switched = await host.executor().switchNetwork(requested);
   const result = toUserResponse(switched, () => null);
   if (result.status === 'Rejected') {
     throw new GnoConnectRequestError(
@@ -82,11 +97,11 @@ async function switchTo(requested: string): Promise<ResolvedNetwork> {
       `User declined switching to ${requested}`,
     );
   }
-  return readNetwork();
+  return readNetwork(host);
 }
 
-async function readNetwork(): Promise<ResolvedNetwork> {
-  const response = await new AdenaExecutor().getNetwork();
+async function readNetwork(host: ProviderHost): Promise<ResolvedNetwork> {
+  const response = await host.executor().getNetwork();
   const resolved = toUserResponse(response, (data) => {
     const network = data as NetworkResultLike;
     return { chainId: network?.chainId ?? '', rpcUrl: network?.rpcUrl ?? '' };
@@ -103,8 +118,8 @@ async function readNetwork(): Promise<ResolvedNetwork> {
  * page world, before the popup exists. The approval screen re-checks it against
  * the account it is about to sign with; this only saves a pointless approval.
  */
-async function assertSigner(pinned: string): Promise<void> {
-  const response = await new AdenaExecutor().getAccount();
+async function assertSigner(host: ProviderHost, pinned: string): Promise<void> {
+  const response = await host.executor().getAccount();
   const account = toUserResponse(response, (data) => (data as AccountResultLike)?.address ?? '');
   if (account.status === 'Rejected' || account.args !== pinned) {
     throw new GnoConnectRequestError(
@@ -119,8 +134,8 @@ async function assertSigner(pinned: string): Promise<void> {
  * established, so without this the core method would depend on `connect`, which
  * the standard makes optional. Idempotent: `ALREADY_CONNECTED` reads as Approved.
  */
-async function ensureEstablished(): Promise<void> {
-  const established = await new AdenaExecutor().addEstablish(siteName());
+async function ensureEstablished(host: ProviderHost): Promise<void> {
+  const established = await host.executor().addEstablish(host.siteName());
   const result = toUserResponse(established, () => null);
   if (result.status === 'Rejected') {
     throw new GnoConnectRequestError(
@@ -131,26 +146,27 @@ async function ensureEstablished(): Promise<void> {
 }
 
 async function prepare(
+  host: ProviderHost,
   batch: GnoBatchIntent,
 ): Promise<Awaited<ReturnType<typeof buildTransactionParams>>> {
   if (batch.msgs.length === 0) {
     throw new GnoConnectRequestError('invalid_request', 'No transaction intent supplied');
   }
 
-  await ensureEstablished();
+  await ensureEstablished(host);
 
-  const requested = requestedChainId(batch);
-  const active = await readNetwork();
+  const requested = requestedChainId(host, batch);
+  const active = await readNetwork(host);
   const { signer } = batch;
 
   // Before the switch prompt, so a hopeless request costs the user nothing — but
   // only while we are on the chain the pin was read from, since an address is
   // prefixed per network and would not compare across a switch.
   if (signer && active.chainId === requested) {
-    await assertSigner(signer);
+    await assertSigner(host, signer);
   }
 
-  const network = active.chainId === requested ? active : await switchTo(requested);
+  const network = active.chainId === requested ? active : await switchTo(host, requested);
 
   // Display only: a chain id is not unique (`dev` names every devnet), so a
   // declared endpoint we are not using is the only signal `chainid` may have
@@ -169,11 +185,22 @@ function toBatch(tx: GnoTransactionIntent): GnoBatchIntent {
   return { msgs: [msg], chainid, rpc, signer };
 }
 
-async function submit(batch: GnoBatchIntent): Promise<UserResponse<{ hash: string }>> {
-  const response = await new AdenaExecutor().doContract(await prepare(batch));
+async function submit(
+  host: ProviderHost,
+  batch: GnoBatchIntent,
+): Promise<UserResponse<{ hash: string }>> {
+  const response = await host.executor().doContract(await prepare(host, batch));
   return toUserResponse(response, (data) => ({
     hash: (data as BroadcastResultLike)?.hash ?? '',
   }));
+}
+
+/** `sendTx` on behalf of a page, from wherever `host` runs. */
+export function sendTxFrom(
+  host: ProviderHost,
+  tx: GnoTransactionIntent,
+): Promise<UserResponse<{ hash: string }>> {
+  return submit(host, toBatch(tx));
 }
 
 function toAccount(data: AccountResultLike): GnoAccount {
@@ -184,23 +211,65 @@ function toAccount(data: AccountResultLike): GnoAccount {
   };
 }
 
+function toNetwork(data: NetworkResultLike): GnoNetwork {
+  return {
+    chainid: data?.chainId ?? '',
+    // The endpoint in effect, never one a page declared.
+    rpc: data?.rpcUrl ?? '',
+    name: data?.networkName ?? '',
+  };
+}
+
+async function readAccount(host: ProviderHost): Promise<UserResponse<GnoAccount>> {
+  const response = await host.executor().getAccount();
+  return toUserResponse(response, (data) => toAccount(data as AccountResultLike));
+}
+
+async function readNetworkInfo(host: ProviderHost): Promise<UserResponse<GnoNetwork>> {
+  const response = await host.executor().getNetwork();
+  return toUserResponse(response, (data) => toNetwork(data as NetworkResultLike));
+}
+
+/** A gated read that never prompts; `not_connected` means the origin lost approval. */
+async function peek<T>(read: () => Promise<UserResponse<T>>): Promise<Peek<T>> {
+  try {
+    const response = await read();
+    return response.status === 'Approved' ? { value: response.args } : 'unknown';
+  } catch (error) {
+    return (error as { code?: string })?.code === 'not_connected' ? 'disconnected' : 'unknown';
+  }
+}
+
+/** What the page was just told is not news, so it is not announced again. */
+function remembered<T>(response: UserResponse<T>, remember: (value: T) => void): UserResponse<T> {
+  if (response.status === 'Approved') {
+    remember(response.args);
+  }
+  return response;
+}
+
 /**
  * Built entirely from executor calls Adena already implements, so every method
  * funnels through the existing approval screens. `signMessage` is absent:
  * everything signable in Gno today is a transaction.
  */
-export function createGnoConnectProvider(): GnoConnectProvider {
+export function createGnoConnectProvider(host: ProviderHost = pageHost): GnoConnectProvider {
+  const events = createProviderEvents(
+    () => peek(() => readAccount(host)),
+    () => peek(() => readNetworkInfo(host)),
+  );
+
   const provider: GnoConnectProvider = {
     async sendTx(tx) {
-      return submit(toBatch(tx));
+      return sendTxFrom(host, tx);
     },
 
     async sendMsgs(tx) {
-      return submit(tx);
+      return submit(host, tx);
     },
 
     async signTx(tx) {
-      const response = await new AdenaExecutor().signTx(await prepare(toBatch(tx)));
+      const response = await host.executor().signTx(await prepare(host, toBatch(tx)));
       // Base64 amino-binary, broadcast unmodified: re-encoding drops fields a
       // session or multisig signature carries.
       return toUserResponse(response, (data) => ({
@@ -209,41 +278,32 @@ export function createGnoConnectProvider(): GnoConnectProvider {
     },
 
     async connect() {
-      const established = await new AdenaExecutor().addEstablish(siteName());
+      const established = await host.executor().addEstablish(host.siteName());
       // A rejection short-circuits before the account is disclosed.
       const establishResult = toUserResponse(established, () => null);
       if (establishResult.status === 'Rejected') {
         return { status: 'Rejected', code: establishResult.code };
       }
 
-      const account = await new AdenaExecutor().getAccount();
-      return toUserResponse(account, (data) => toAccount(data as AccountResultLike));
+      return remembered(await readAccount(host), events.rememberAccount);
     },
 
     async getAccount() {
-      const response = await new AdenaExecutor().getAccount();
-      return toUserResponse(response, (data) => toAccount(data as AccountResultLike));
+      return remembered(await readAccount(host), events.rememberAccount);
     },
 
     async getNetwork() {
-      const response = await new AdenaExecutor().getNetwork();
-      return toUserResponse(response, (data): GnoNetwork => {
-        const network = data as NetworkResultLike;
-        return {
-          chainid: network?.chainId ?? '',
-          // The endpoint in effect, never one a page declared.
-          rpc: network?.rpcUrl ?? '',
-          name: network?.networkName ?? '',
-        };
-      });
+      return remembered(await readNetworkInfo(host), events.rememberNetwork);
     },
 
     async switchNetwork(chainid) {
-      const response = await new AdenaExecutor().switchNetwork(chainid);
+      const response = await host.executor().switchNetwork(chainid);
       // Already on that network is the requested end state, so it reads as
       // approved. `UNADDED_NETWORK` is a genuine failure: adding is the user's call.
       return toUserResponse(response, () => ({ chainid }));
     },
+
+    on: events.on,
   };
 
   return Object.freeze(provider);

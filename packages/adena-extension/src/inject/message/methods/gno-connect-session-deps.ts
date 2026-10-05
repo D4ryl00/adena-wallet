@@ -2,6 +2,9 @@
 import { isSessionAccount } from 'adena-module';
 
 import { GnoProvider } from '@common/provider/gno/gno-provider';
+import { StorageManager } from '@common/storage/storage-manager';
+import { WalletEstablishRepository } from '@repositories/wallet';
+import { WalletEstablishService } from '@services/wallet';
 import { GnoSessionAnswer } from '@inject/gnoconnect/types';
 import { RoutePath } from '@types';
 
@@ -57,7 +60,16 @@ export function sessionDeps(
   return {
     origin: url.origin,
     isEstablished: async () => core.establishService.isEstablishedBy(await core.getCurrentAccountId(), siteName),
-    withdrawApproval: async () => core.establishService.unEstablishBy(await core.getCurrentAccountId(), siteName),
+    withdrawApproval: async (): Promise<void> => {
+      // Through a throwaway storage: the background's shared one keeps the whole
+      // store in memory after its first write, and would then miss what a popup
+      // writes later, such as this origin approved again.
+      const establish = new WalletEstablishService(
+        new WalletEstablishRepository(new StorageManager()),
+        core.chainRegistry,
+      );
+      await establish.unEstablishBy(await core.getCurrentAccountId(), siteName);
+    },
     network,
     identity: async (): ReturnType<SessionDeps['identity']> => {
       const inMemoryKey = await core.getInMemoryKey();

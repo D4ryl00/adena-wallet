@@ -55,6 +55,7 @@ export enum RoutePath {
   SignMultisigDocument = 'approve/wallet/sign-multisig-document',
   BroadcastMultisigTransaction = 'approve/wallet/broadcast-multisig-transaction',
   ApproveEstablish = '/approve/wallet/establish',
+  ApproveGnoConnectSession = '/approve/wallet/gnoconnect-session',
   ApproveEstablishCosmos = '/approve/wallet/establish-cosmos',
   ApproveSignArbitrary = '/approve/wallet/sign-arbitrary',
   ApproveSignArbitraryLedgerLoading = '/approve/wallet/sign-arbitrary/ledger-loading',

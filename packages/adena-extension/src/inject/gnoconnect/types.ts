@@ -95,6 +95,54 @@ export interface GnoAccount {
   pubkey: string | null;
 }
 
+/** The launch link's `connect` parameters, as fields. `callback` has no place here. */
+export interface GnoConnectOptions {
+  /** Required as soon as `pubkey` is present. */
+  chainid?: string;
+  /** Scope hints, or the requested grant with `pubkey`. */
+  allow?: string[];
+  spend?: string;
+  period?: number;
+  expires?: number;
+  /** A producer-held session: the producer's key, `gpub1…`. */
+  pubkey?: string;
+  old?: string;
+  signer?: string;
+  state?: string;
+  iat?: number;
+  sig?: string;
+  oldsig?: string;
+}
+
+export interface GnoSessionGrant {
+  /** The bech32 address of `pubkey`: compare it with your key's. */
+  session: string;
+  expiresAt: number;
+  allow: string[];
+  spend: string;
+  period: number;
+  revoked?: string;
+  hash?: string;
+  features?: string[];
+}
+
+export interface GnoDisconnectRequest {
+  pubkey: string;
+  chainid: string;
+  signer: string;
+  state: string;
+  iat: number;
+  sig: string;
+}
+
+/** Extension-internal request types for the session calls (see gno-connect-session.ts). */
+export const GNOCONNECT_SESSION_CHECK = 'GNOCONNECT_SESSION_CHECK';
+export const GNOCONNECT_SESSION_CONNECT = 'GNOCONNECT_SESSION_CONNECT';
+export const GNOCONNECT_SESSION_DISCONNECT = 'GNOCONNECT_SESSION_DISCONNECT';
+
+/** What the background answers to a session call. */
+export type GnoSessionAnswer = UserResponse<unknown> | { fail: GnoErrorCode; message: string };
+
 export interface GnoNetwork {
   chainid: string;
   rpc: string;
@@ -117,7 +165,17 @@ export interface GnoConnectProvider {
   /** Sign without broadcasting. `signedtx` is base64 amino-binary, opaque. */
   signTx(tx: GnoTransactionIntent): Promise<UserResponse<{ signedtx: string }>>;
 
-  connect(): Promise<UserResponse<GnoAccount>>;
+  /**
+   * The launch link's `connect`: nothing, scope hints, or `pubkey` with its
+   * grant and proof, which asks for a producer-held session.
+   */
+  connect(opts?: GnoConnectOptions): Promise<UserResponse<GnoAccount & Partial<GnoSessionGrant>>>;
+
+  /**
+   * The launch link's `disconnect`: always withdraws this origin's approval;
+   * with a request naming a key, also revokes that session on chain.
+   */
+  disconnect(req?: GnoDisconnectRequest): Promise<UserResponse<{ revoked?: string; hash?: string }>>;
 
   getAccount(): Promise<UserResponse<GnoAccount>>;
 

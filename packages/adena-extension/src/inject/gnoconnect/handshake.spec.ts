@@ -60,13 +60,26 @@ jest.mock('./tx-builder', () => ({
   })),
 }));
 
+import {
+  answerSessionMessage,
+  createReplayMemory,
+  ReplayMemory,
+  SessionDeps,
+  SessionMessageData,
+  SessionReviewRequest,
+  toSessionReply,
+} from '@inject/message/methods/gno-connect-session';
+
 import { announceGnoWallet } from './announce';
 import { GnoConnectError } from './response';
 import { buildTransactionParams } from './tx-builder';
 import {
   GNO_REGISTER_WALLET_EVENT,
   GNO_REQUEST_WALLET_EVENT,
+  GnoConnectOptions,
+  GnoDisconnectRequest,
   GnoWalletAnnouncement,
+  UserResponse,
 } from './types';
 
 /**
@@ -226,7 +239,7 @@ describe('GnoConnect handshake, end to end', () => {
 
     await expect(provider.connect()).resolves.toEqual({
       status: 'Approved',
-      args: { address: 'g1abc', chainid: 'dev', pubkey: 'pub' },
+      args: { address: 'g1abc', chainid: 'dev', pubkey: 'pub', features: ['sendtx', 'signtx', 'multi_msg', 'sessions'] },
     });
     expect(seenRequests).toEqual(['ADD_ESTABLISH', 'GET_ACCOUNT']);
   });
@@ -598,5 +611,334 @@ describe('GnoConnect handshake, end to end', () => {
     const { provider } = await discoverWallet();
 
     await expect(provider.switchNetwork('nope')).rejects.toBeInstanceOf(GnoConnectError);
+  });
+});
+
+// Sessions: the provider, the executor and the real background handler, with the
+// wallet's storage, chain and review window replaced by `deps`.
+describe('GnoConnect sessions, end to end', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { ec: EC } = require('elliptic');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { sha256, toBech32 } = require('adena-module');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { canonicalPayload, decodeGpub } = require('./session-request');
+  const sessionMethods = { answerSessionMessage, createReplayMemory, toSessionReply };
+
+  const IDENTITY = 'g1jg8mtutu9khhfwc4nxmuhcpftf0pajdhfvsqf5';
+  const NOW = 1790841600;
+  const secp = new EC('secp256k1');
+
+  function newKey(seed: string): { gpub: string; address: string; sign: (d: Uint8Array) => Uint8Array } {
+    const kp = secp.keyFromPrivate(seed.repeat(32));
+    const pub: number[] = kp.getPublic(true, 'array');
+    const url = Array.from(new TextEncoder().encode('/tm.PubKeySecp256k1'));
+    const inner = [0x0a, pub.length, ...pub];
+    const gpub = toBech32('gpub', Uint8Array.from([0x0a, url.length, ...url, 0x12, inner.length, ...inner]), Infinity);
+    return {
+      gpub,
+      address: decodeGpub(gpub).address,
+      sign: (d): Uint8Array => {
+        const s = kp.sign(Array.from(sha256(d)), { canonical: true });
+        return Uint8Array.from([...s.r.toArray('be', 32), ...s.s.toArray('be', 32)]);
+      },
+    };
+  }
+
+  const b64url = (b: Uint8Array): string => Buffer.from(b).toString('base64url');
+
+  type SignedRequest = GnoConnectOptions & GnoDisconnectRequest;
+
+  function signed(host: 'connect' | 'disconnect', fields: Record<string, unknown>, key = newKey('01')): SignedRequest {
+    const data = new TextEncoder().encode(canonicalPayload(host, { ...fields, sig: '' }));
+    return { ...fields, sig: b64url(key.sign(data)) } as unknown as SignedRequest;
+  }
+
+  const KEY = newKey('01');
+  const grantFields = (state = 's1'): Record<string, unknown> => ({
+    pubkey: KEY.gpub,
+    allow: ['vm/exec:gno.land/r/demo/game'],
+    spend: '5000000ugnot',
+    period: 3600,
+    expires: 86400,
+    chainid: ACTIVE_CHAIN_ID,
+    state,
+    iat: NOW,
+  });
+  const disconnectFields = (state = 'd1'): Record<string, unknown> => ({
+    pubkey: KEY.gpub,
+    chainid: ACTIVE_CHAIN_ID,
+    signer: IDENTITY,
+    state,
+    iat: NOW,
+  });
+
+  type Session = { expiresAt: number; allow: string[]; spend: string; period: number };
+
+  interface FakeWallet {
+    state: {
+      established: boolean;
+      sessions: Map<string, Session>;
+      reviews: SessionReviewRequest[];
+      withdrawals: number;
+      reviewAnswer: unknown;
+      isSession: boolean;
+    };
+    deps: SessionDeps;
+    memory: ReplayMemory;
+  }
+
+  function wallet(): FakeWallet {
+    const state: FakeWallet['state'] = {
+      established: true,
+      sessions: new Map<string, Session>(),
+      reviews: [],
+      withdrawals: 0,
+      reviewAnswer: { status: 'Rejected' } as unknown,
+      isSession: false,
+    };
+    const deps: SessionDeps = {
+      origin: 'http://localhost',
+      isEstablished: async () => state.established,
+      withdrawApproval: async (): Promise<void> => {
+        state.withdrawals++;
+        state.established = false;
+      },
+      network: async () => ({ chainId: ACTIVE_CHAIN_ID, rpcUrl: ACTIVE_RPC_URL }),
+      identity: async () => ({ address: IDENTITY, pubkey: 'gpub1identity', isSession: state.isSession }),
+      getSession: async (_master: string, address: string) => state.sessions.get(address) ?? null,
+      countSessions: async () => state.sessions.size,
+      chainNow: async () => NOW,
+      clock: () => NOW,
+      review: async (request: SessionReviewRequest): Promise<UserResponse<unknown>> => {
+        state.reviews.push(request);
+        return state.reviewAnswer as UserResponse<unknown>;
+      },
+    };
+    return { state, deps, memory: sessionMethods.createReplayMemory() };
+  }
+
+  /** The background: session messages go to the real handler, the rest to `other`. */
+  type Request = { type: string; data: SessionMessageData };
+
+  const nothing = (): Record<string, unknown> => ({});
+
+  function sessionBridge(w: FakeWallet, other: (request: Request) => Record<string, unknown> = nothing): () => void {
+    return bridgeAsync(async (request) => {
+      if (String(request.type).startsWith('GNOCONNECT_SESSION_')) {
+        return sessionMethods.toSessionReply(
+          await sessionMethods.answerSessionMessage(w.deps, w.memory, request.type, request.data),
+        );
+      }
+      return onConnectedWallet(other)(request);
+    });
+  }
+
+  /** `bridge`, for a reply that is computed asynchronously. */
+  function bridgeAsync(reply: (request: Request) => Promise<Record<string, unknown>>): () => void {
+    const spy = jest.spyOn(window, 'postMessage').mockImplementation((message: unknown) => {
+      const request = message as Record<string, unknown>;
+      if (request?.status !== 'request') return;
+      setTimeout(async () => {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: { ...request, ...(await reply(request as unknown as Request)) },
+            origin: window.location.origin,
+          }),
+        );
+      }, 0);
+    });
+    return (): void => spy.mockRestore();
+  }
+
+  let teardown: (() => void)[] = [];
+  afterEach(() => {
+    teardown.forEach((fn) => fn());
+    teardown = [];
+  });
+
+  it('refuses a bad proof with invalid_proof before any window', async () => {
+    const w = wallet();
+    const seen: string[] = [];
+    teardown.push(sessionBridge(w, (r) => (seen.push(r.type), {})));
+    const { provider } = await discoverWallet();
+
+    const req = signed('connect', grantFields());
+    await expect(provider.connect({ ...req, spend: '9000000ugnot' })).resolves.toEqual({
+      status: 'Rejected',
+      code: 'invalid_proof',
+    });
+    expect(w.state.reviews).toHaveLength(0);
+    expect(seen).not.toContain('ADD_ESTABLISH');
+  });
+
+  it('refuses a stale request with stale_request', async () => {
+    const w = wallet();
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    await expect(provider.connect(signed('connect', { ...grantFields(), iat: NOW - 660 }))).resolves.toEqual({
+      status: 'Rejected',
+      code: 'stale_request',
+    });
+  });
+
+  it('opens the review for a new grant and answers the grant', async () => {
+    const w = wallet();
+    w.state.reviewAnswer = {
+      status: 'Approved',
+      args: { session: KEY.address, expiresAt: NOW + 86400, allow: ['vm/exec:gno.land/r/demo/game'], spend: '5000000ugnot', period: 3600, hash: 'h1' },
+    };
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    const answer = await provider.connect(signed('connect', grantFields()));
+    expect(w.state.reviews).toHaveLength(1);
+    expect(w.state.reviews[0]).toMatchObject({ host: 'connect', origin: 'http://localhost', identity: IDENTITY, onChainOld: false });
+    expect(answer).toEqual({
+      status: 'Approved',
+      args: {
+        address: IDENTITY, chainid: ACTIVE_CHAIN_ID, pubkey: 'gpub1identity', features: ['sendtx', 'signtx', 'multi_msg', 'sessions'],
+        session: KEY.address, expiresAt: NOW + 86400, allow: ['vm/exec:gno.land/r/demo/game'], spend: '5000000ugnot', period: 3600, hash: 'h1',
+      },
+    });
+  });
+
+  it('answers a live session from the chain, without a window', async () => {
+    const w = wallet();
+    w.state.sessions.set(KEY.address, { expiresAt: NOW + 100, allow: ['bank/send'], spend: '1ugnot', period: 0 });
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    const answer = await provider.connect(signed('connect', grantFields()));
+    expect(w.state.reviews).toHaveLength(0);
+    expect(answer).toMatchObject({
+      status: 'Approved',
+      args: { address: IDENTITY, session: KEY.address, expiresAt: NOW + 100, allow: ['bank/send'], spend: '1ugnot', period: 0 },
+    });
+  });
+
+  it('answers session_expired for an expired session', async () => {
+    const w = wallet();
+    w.state.sessions.set(KEY.address, { expiresAt: NOW - 1, allow: ['bank/send'], spend: '', period: 0 });
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    await expect(provider.connect(signed('connect', grantFields()))).resolves.toEqual({ status: 'Rejected', code: 'session_expired' });
+  });
+
+  it('answers session_limit when the identity has 16 sessions', async () => {
+    const w = wallet();
+    for (let i = 0; i < 16; i++) w.state.sessions.set(`g1other${i}`, { expiresAt: NOW + 1, allow: ['*'], spend: '', period: 0 });
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    await expect(provider.connect(signed('connect', grantFields()))).resolves.toEqual({ status: 'Rejected', code: 'session_limit' });
+    expect(w.state.reviews).toHaveLength(0);
+  });
+
+  it('answers signer_unavailable when the active account is itself a session', async () => {
+    const w = wallet();
+    w.state.isSession = true;
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    await expect(provider.connect(signed('connect', grantFields()))).resolves.toEqual({ status: 'Rejected', code: 'signer_unavailable' });
+  });
+
+  it('ignores a repeated (pubkey, state): no second window', async () => {
+    const w = wallet();
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    const req = signed('connect', grantFields('same'));
+    await provider.connect(req);
+    await expect(provider.connect(req)).resolves.toEqual({ status: 'Rejected', code: 'invalid_request' });
+    expect(w.state.reviews).toHaveLength(1);
+  });
+
+  it('keeps connect() and connect(hints) as they were, and lists sessions in features', async () => {
+    const w = wallet();
+    teardown.push(
+      sessionBridge(w, (r) =>
+        r.type === 'GET_ACCOUNT'
+          ? { status: 'success', type: 'GET_ACCOUNT', data: { address: 'g1abc', chainId: 'dev', publicKey: { value: 'pub' } } }
+          : {},
+      ),
+    );
+    const { provider } = await discoverWallet();
+
+    const plain = { status: 'Approved', args: { address: 'g1abc', chainid: 'dev', pubkey: 'pub', features: ['sendtx', 'signtx', 'multi_msg', 'sessions'] } };
+    await expect(provider.connect()).resolves.toEqual(plain);
+    await expect(provider.connect({ allow: ['bank/send'], expires: 3600, chainid: 'dev' })).resolves.toEqual(plain);
+    await expect(provider.connect({ allow: ['bank/nope'] })).resolves.toEqual({ status: 'Rejected', code: 'invalid_request' });
+  });
+
+  it('disconnect() withdraws the approval and fires disconnect, without a window', async () => {
+    const w = wallet();
+    teardown.push(
+      sessionBridge(w, (r) =>
+        r.type === 'GET_ACCOUNT'
+          ? { status: 'success', type: 'GET_ACCOUNT', data: { address: IDENTITY, chainId: 'dev', publicKey: null } }
+          : {},
+      ),
+    );
+    const { provider } = await discoverWallet();
+    const heard = jest.fn();
+    provider.on('disconnect', heard);
+
+    await expect(provider.disconnect()).resolves.toEqual({ status: 'Approved', args: {} });
+    expect(w.state.withdrawals).toBe(1);
+    expect(w.state.reviews).toHaveLength(0);
+    expect(heard).toHaveBeenCalledTimes(1);
+  });
+
+  it('disconnect(req) declined in the window is Rejected, and the approval is withdrawn anyway', async () => {
+    const w = wallet();
+    w.state.sessions.set(KEY.address, { expiresAt: NOW + 100, allow: ['bank/send'], spend: '', period: 0 });
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    await expect(provider.disconnect(signed('disconnect', disconnectFields()))).resolves.toEqual({ status: 'Rejected' });
+    expect(w.state.reviews).toHaveLength(1);
+    expect(w.state.reviews[0]).toMatchObject({ host: 'disconnect' });
+    expect(w.state.withdrawals).toBeGreaterThanOrEqual(1);
+    expect(w.state.established).toBe(false);
+  });
+
+  it('disconnect(req) for a key that is not a session answers session_not_found and withdraws', async () => {
+    const w = wallet();
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    await expect(provider.disconnect(signed('disconnect', disconnectFields()))).resolves.toEqual({
+      status: 'Rejected',
+      code: 'session_not_found',
+    });
+    expect(w.state.reviews).toHaveLength(0);
+    expect(w.state.established).toBe(false);
+  });
+
+  it('disconnect(req) with a bad proof answers invalid_proof and withdraws', async () => {
+    const w = wallet();
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    const req = signed('disconnect', disconnectFields());
+    await expect(provider.disconnect({ ...req, state: 'other' })).resolves.toEqual({ status: 'Rejected', code: 'invalid_proof' });
+    expect(w.state.established).toBe(false);
+  });
+
+  it('disconnect(req) approved answers revoked and hash', async () => {
+    const w = wallet();
+    w.state.sessions.set(KEY.address, { expiresAt: NOW + 100, allow: ['bank/send'], spend: '', period: 0 });
+    w.state.reviewAnswer = { status: 'Approved', args: { revoked: KEY.address, hash: 'h2' } };
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    await expect(provider.disconnect(signed('disconnect', disconnectFields()))).resolves.toEqual({
+      status: 'Approved',
+      args: { revoked: KEY.address, hash: 'h2' },
+    });
   });
 });

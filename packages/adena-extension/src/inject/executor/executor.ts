@@ -141,6 +141,22 @@ export class AdenaExecutor {
     return this.sendEventMessage(eventMessage);
   };
 
+  /** A GnoConnect session call; the answer is in `data.gnoconnect`. */
+  public gnoConnectSession = (
+    type: string,
+    data: { host: 'connect' | 'disconnect'; fields: unknown },
+  ): Promise<WalletResponse<unknown>> => {
+    // Built literally: the SDK's WalletMessageInfo has no row for these types.
+    return this.sendEventMessage({
+      code: 0,
+      type: type as unknown as WalletResponseType,
+      status: 'request',
+      message: '',
+      data,
+      withNotification: false,
+    });
+  };
+
   public getAccount = (): Promise<GetAccountResponse> => {
     const eventMessage = AdenaExecutor.createEventMessage(WalletResponseExecuteType.GET_ACCOUNT);
     return this.sendEventMessage(eventMessage);

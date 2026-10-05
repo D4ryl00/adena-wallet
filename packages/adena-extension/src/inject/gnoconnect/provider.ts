@@ -4,17 +4,29 @@ import {
   parseGnoConnectChainId,
 } from '@inject/message/methods/gno-connect';
 
-import { createProviderEvents, Peek } from './events';
-import { GnoConnectRequestError, toUserResponse } from './response';
+import { createProviderEvents, Peek, ProviderEvents } from './events';
+import { GnoConnectError, GnoConnectRequestError, toUserResponse } from './response';
+import { validateScopeHints } from './scope-hints';
 import { buildTransactionParams, ResolvedNetwork } from './tx-builder';
 import {
+  GNOCONNECT_SESSION_CHECK,
+  GNOCONNECT_SESSION_CONNECT,
+  GNOCONNECT_SESSION_DISCONNECT,
   GnoAccount,
   GnoBatchIntent,
+  GnoConnectOptions,
   GnoConnectProvider,
+  GnoDisconnectRequest,
+  GnoErrorCode,
   GnoNetwork,
+  GnoSessionAnswer,
+  GnoSessionGrant,
   GnoTransactionIntent,
   UserResponse,
 } from './types';
+
+/** What a `connect` answer lists: the hosts, the multi-message form, sessions. */
+const FEATURES = ['sendtx', 'signtx', 'multi_msg', 'sessions'];
 
 /** Both broadcast endpoints carry `hash` (tm2-js-client common.d.ts:154-167). */
 interface BroadcastResultLike {
@@ -248,6 +260,105 @@ function remembered<T>(response: UserResponse<T>, remember: (value: T) => void):
   return response;
 }
 
+const rejected = (code?: GnoErrorCode): UserResponse<never> =>
+  code ? { status: 'Rejected', code } : { status: 'Rejected' };
+
+/** A session call: the background's answer, or a genuine failure thrown. */
+async function session<T>(
+  host: ProviderHost,
+  type: string,
+  data: { host: 'connect' | 'disconnect'; fields: unknown },
+): Promise<UserResponse<T>> {
+  const response = await host.executor().gnoConnectSession(type, data);
+  const answer = (response.data as { gnoconnect?: GnoSessionAnswer } | undefined)?.gnoconnect;
+  if (!answer) {
+    // Refused before the session handler (no account, locked): Adena's vocabulary.
+    return toUserResponse(response, (d) => d as T);
+  }
+  if ('fail' in answer) {
+    throw new GnoConnectRequestError(answer.fail, answer.message);
+  }
+  return answer as UserResponse<T>;
+}
+
+/** Runs a step that may prompt; a decline or an unusable network is the answer. */
+async function asAnswer<T>(step: () => Promise<T>): Promise<T | UserResponse<never>> {
+  try {
+    return await step();
+  } catch (error) {
+    if (error instanceof GnoConnectRequestError) return rejected(error.code);
+    throw error;
+  }
+}
+
+/**
+ * `connect` naming a key. The background checks the request before any window
+ * opens; then the origin is approved and the network resolved as for any
+ * request; then the background looks the key up and, if needed, opens the review.
+ */
+async function connectWithKey(
+  host: ProviderHost,
+  events: ProviderEvents,
+  opts: GnoConnectOptions,
+): Promise<UserResponse<GnoAccount & Partial<GnoSessionGrant>>> {
+  const data = { host: 'connect' as const, fields: opts };
+  const check = await session(host, GNOCONNECT_SESSION_CHECK, data);
+  if (check.status === 'Rejected') return check;
+
+  const prepared = await asAnswer(async () => {
+    const established = toUserResponse(await host.executor().addEstablish(host.siteName()), () => null);
+    if (established.status === 'Rejected') return rejected(established.code);
+    const chainid = opts.chainid ?? '';
+    const active = await readNetwork(host);
+    if (active.chainId !== chainid) await switchTo(host, chainid);
+    return null;
+  });
+  if (prepared) return prepared;
+
+  const answer = await session<GnoAccount & GnoSessionGrant>(host, GNOCONNECT_SESSION_CONNECT, data);
+  if (answer.status === 'Approved') {
+    const { address, chainid, pubkey } = answer.args;
+    events.rememberAccount({ address, chainid, pubkey });
+  }
+  return answer;
+}
+
+/**
+ * `disconnect`: the approval goes in every case, after the call. With a key,
+ * the background checks the request, then the network is resolved (when the
+ * origin may still read it) and the review opens.
+ */
+async function disconnectFrom(
+  host: ProviderHost,
+  req: GnoDisconnectRequest | undefined,
+): Promise<UserResponse<{ revoked?: string; hash?: string }>> {
+  const withdraw = { host: 'disconnect' as const, fields: null };
+  if (req === undefined) return session(host, GNOCONNECT_SESSION_DISCONNECT, withdraw);
+
+  const data = { host: 'disconnect' as const, fields: req };
+  const check = await session(host, GNOCONNECT_SESSION_CHECK, data);
+  const switched =
+    check.status === 'Rejected'
+      ? check
+      : await asAnswer(async () => {
+          let active: ResolvedNetwork | null = null;
+          try {
+            active = await readNetwork(host);
+          } catch (error) {
+            // An origin no longer approved cannot read the network; the
+            // background still refuses a request for another chain.
+            if (!(error instanceof GnoConnectError && error.code === 'not_connected')) throw error;
+          }
+          if (active && active.chainId !== req.chainid) await switchTo(host, req.chainid);
+          return null;
+        });
+  if (switched) {
+    await session(host, GNOCONNECT_SESSION_DISCONNECT, withdraw);
+    return switched;
+  }
+  return session(host, GNOCONNECT_SESSION_DISCONNECT, data);
+}
+
 /**
  * Built entirely from executor calls Adena already implements, so every method
  * funnels through the existing approval screens. `signMessage` is absent:
@@ -277,7 +388,18 @@ export function createGnoConnectProvider(host: ProviderHost = pageHost): GnoConn
       }));
     },
 
-    async connect() {
+    async connect(opts) {
+      if (opts?.pubkey !== undefined) {
+        return connectWithKey(host, events, opts);
+      }
+      if (opts) {
+        try {
+          validateScopeHints(opts);
+        } catch (error) {
+          return rejected((error as GnoConnectRequestError).code);
+        }
+      }
+
       const established = await host.executor().addEstablish(host.siteName());
       // A rejection short-circuits before the account is disclosed.
       const establishResult = toUserResponse(established, () => null);
@@ -285,7 +407,18 @@ export function createGnoConnectProvider(host: ProviderHost = pageHost): GnoConn
         return { status: 'Rejected', code: establishResult.code };
       }
 
-      return remembered(await readAccount(host), events.rememberAccount);
+      const account = remembered(await readAccount(host), events.rememberAccount);
+      return account.status === 'Approved'
+        ? { status: 'Approved', args: { ...account.args, features: FEATURES } }
+        : account;
+    },
+
+    async disconnect(req) {
+      try {
+        return await disconnectFrom(host, req);
+      } finally {
+        events.forget();
+      }
     },
 
     async getAccount() {

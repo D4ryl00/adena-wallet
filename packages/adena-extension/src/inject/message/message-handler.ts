@@ -3,10 +3,21 @@ import { MemoryProvider } from '@common/provider/memory/memory-provider';
 import { HandlerMethod } from '.';
 import { CommandMessageData } from './command-message';
 import { InjectionMessage, InjectionMessageInstance } from './message';
+import {
+  GNOCONNECT_SESSION_CHECK,
+  GNOCONNECT_SESSION_CONNECT,
+  GNOCONNECT_SESSION_DISCONNECT,
+} from '@inject/gnoconnect/types';
 import { existsPopups, removePopups } from './methods';
 import { InjectCore } from './methods/core';
+import { gnoConnectSession } from './methods/gno-connect-session-deps';
 
-const NON_POPUP_REQUEST_TYPES: ReadonlySet<string> = new Set(['GET_ACCOUNT', 'GET_NETWORK']);
+// A session CHECK opens nothing, so it must not close another page's approval either.
+const NON_POPUP_REQUEST_TYPES: ReadonlySet<string> = new Set([
+  'GET_ACCOUNT',
+  'GET_NETWORK',
+  GNOCONNECT_SESSION_CHECK,
+]);
 
 export class MessageHandler {
   public static createHandler = (
@@ -246,6 +257,13 @@ export class MessageHandler {
         break;
       case 'SEND_COSMOS_TX':
         HandlerMethod.cosmosSendTx(core, message, sendResponse);
+        break;
+      // Origin-checked inside: the session calls read it from `sender`, and a
+      // `disconnect` must work for an origin whose approval is already gone.
+      case GNOCONNECT_SESSION_CHECK:
+      case GNOCONNECT_SESSION_CONNECT:
+      case GNOCONNECT_SESSION_DISCONNECT:
+        gnoConnectSession(core, message, sender, sendResponse);
         break;
       default:
         break;

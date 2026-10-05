@@ -13,6 +13,8 @@ export interface ProviderEvents {
   /** Records what a page's own call returned, so it is not re-announced. */
   rememberAccount(account: GnoAccount): void;
   rememberNetwork(network: GnoNetwork): void;
+  /** The page's own `disconnect` withdrew the approval: announce it once. */
+  forget(): void;
 }
 
 /**
@@ -119,6 +121,12 @@ export function createProviderEvents(
     },
     rememberNetwork(next): void {
       network = next;
+    },
+    forget(): void {
+      // The hint that follows reads `disconnected` with nothing known, so it stays silent.
+      account = null;
+      network = null;
+      emit('disconnect', null);
     },
   };
 }

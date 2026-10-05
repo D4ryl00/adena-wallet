@@ -27,6 +27,7 @@ import AddCustomNetworkPage from '@pages/popup/wallet/add-custom-network';
 import ApproveAddingNetworkPage from '@pages/popup/wallet/approve-adding-network';
 import ApproveChangingNetworkPage from '@pages/popup/wallet/approve-changing-network';
 import ApproveEstablish from '@pages/popup/wallet/approve-establish';
+import ApproveGnoConnectSession from '@pages/popup/wallet/approve-gnoconnect-session';
 import ApproveEstablishCosmos from '@pages/popup/wallet/approve-establish-cosmos';
 import ApproveGetCosmosKey from '@pages/popup/wallet/approve-get-cosmos-key';
 import ApproveSignArbitrary from '@pages/popup/wallet/approve-sign-arbitrary';
@@ -162,6 +163,7 @@ export const PopupRouter = (): JSX.Element => {
         />
         <Route path={RoutePath.ApproveLogin} element={<ApproveLogin />} />
         <Route path={RoutePath.ApproveEstablish} element={<ApproveEstablish />} />
+        <Route path={RoutePath.ApproveGnoConnectSession} element={<ApproveGnoConnectSession />} />
         <Route path={RoutePath.ApproveEstablishCosmos} element={<ApproveEstablishCosmos />} />
         <Route path={RoutePath.ApproveSignArbitrary} element={<ApproveSignArbitrary />} />
         <Route

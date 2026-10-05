@@ -80,7 +80,7 @@ export interface SessionDeps {
   chainNow(): Promise<number | null>;
   clock(): number;
   /** Opens the review window and resolves with its answer. */
-  review(request: SessionReviewRequest): Promise<UserResponse<unknown>>;
+  review(request: SessionReviewRequest): Promise<GnoSessionAnswer>;
 }
 
 /** A session answer: the page's response, or a genuine failure the provider throws. */
@@ -192,7 +192,7 @@ async function connectWithKey(deps: SessionDeps, fields: SessionRequestFields): 
     rpcUrl: network.rpcUrl,
     onChainOld,
   });
-  return answer.status === 'Approved'
+  return 'status' in answer && answer.status === 'Approved'
     ? { status: 'Approved', args: { ...account, ...(answer.args as object) } }
     : answer;
 }

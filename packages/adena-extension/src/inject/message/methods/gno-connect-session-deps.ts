@@ -2,7 +2,7 @@
 import { isSessionAccount } from 'adena-module';
 
 import { GnoProvider } from '@common/provider/gno/gno-provider';
-import { UserResponse } from '@inject/gnoconnect/types';
+import { GnoSessionAnswer } from '@inject/gnoconnect/types';
 import { RoutePath } from '@types';
 
 import { InjectionMessage } from '../message';
@@ -93,16 +93,16 @@ export function sessionDeps(
     },
     clock,
     review: (request: SessionReviewRequest) =>
-      new Promise<UserResponse<unknown>>((resolve) => {
+      new Promise<GnoSessionAnswer>((resolve) => {
         const closed = { ...toSessionReply({ status: 'Rejected' }), key: message.key } as unknown as InjectionMessage;
         createPopup(
           RoutePath.ApproveGnoConnectSession,
           { ...message, hostname: url.hostname, protocol: url.protocol, data: request as unknown as Record<string, unknown> },
           closed,
           (reply: InjectionMessage) => {
-            const answer = reply?.data?.gnoconnect as UserResponse<unknown> | undefined;
+            const answer = reply?.data?.gnoconnect as GnoSessionAnswer | undefined;
             // Force-closed by the extension (another request took over): not the user's answer.
-            resolve(answer && 'status' in answer ? answer : { status: 'Rejected' });
+            resolve(answer && ('status' in answer || 'fail' in answer) ? answer : { status: 'Rejected' });
           },
         );
       }),

@@ -159,6 +159,10 @@ export const ApproveLogin = (): JSX.Element => {
       case 'SWITCH_NETWORK':
         navigate(RoutePath.ApproveChangingNetwork + location.search, { state: { requestData } });
         return;
+      case 'GNOCONNECT_SESSION_CONNECT':
+      case 'GNOCONNECT_SESSION_DISCONNECT':
+        navigate(RoutePath.ApproveGnoConnectSession + location.search, { state: { requestData } });
+        return;
       default:
         chrome.runtime.sendMessage(
           InjectionMessageInstance.failure(WalletResponseFailureType.UNEXPECTED_ERROR, requestData),

@@ -139,6 +139,8 @@ export interface GnoDisconnectRequest {
 export const GNOCONNECT_SESSION_CHECK = 'GNOCONNECT_SESSION_CHECK';
 export const GNOCONNECT_SESSION_CONNECT = 'GNOCONNECT_SESSION_CONNECT';
 export const GNOCONNECT_SESSION_DISCONNECT = 'GNOCONNECT_SESSION_DISCONNECT';
+/** From the review window, before it broadcasts: `{ type, review: <the request's key> }`. */
+export const GNOCONNECT_SESSION_SENT = 'GNOCONNECT_SESSION_SENT';
 
 /** What the background answers to a session call. */
 export type GnoSessionAnswer = UserResponse<unknown> | { fail: GnoErrorCode; message: string };

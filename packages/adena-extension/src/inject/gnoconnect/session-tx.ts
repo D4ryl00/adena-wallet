@@ -6,6 +6,7 @@ import {
 } from '@services/transaction/message/auth/auth';
 
 import { decodeGpub, SessionHost, SessionRequestFields } from './session-request';
+import { GnoSessionAnswer } from './types';
 
 export interface SessionTxRequest {
   host: SessionHost;
@@ -41,6 +42,46 @@ export function buildSessionMessages(request: SessionTxRequest, nowSec: number):
     }),
   );
   return messages;
+}
+
+/** A session as the chain holds it. */
+export interface ChainSession {
+  expiresAt: number;
+  allow: string[];
+  spend: string;
+  period: number;
+}
+
+/**
+ * What the sent transaction did, read from the chain until it shows: the
+ * session for `connect`, its absence for `disconnect`. A read that fails proves
+ * neither. `tries` reads, with `wait` between two.
+ */
+export async function readBack(
+  request: SessionTxRequest,
+  read: (master: string, session: string) => Promise<ChainSession | null>,
+  wait: () => Promise<void>,
+  tries: number,
+): Promise<GnoSessionAnswer> {
+  const key = decodeGpub(request.fields.pubkey).address;
+  for (let i = 0; i < tries; i++) {
+    if (i > 0) await wait();
+    let session: ChainSession | null;
+    try {
+      session = await read(request.identity, key);
+    } catch {
+      continue;
+    }
+    if (request.host === 'disconnect' && !session) {
+      return { status: 'Approved', args: { revoked: key } };
+    }
+    if (request.host === 'connect' && session) {
+      const { fields, onChainOld } = request;
+      const revoked = fields.old && onChainOld ? decodeGpub(fields.old).address : undefined;
+      return { status: 'Approved', args: { session: key, ...session, ...(revoked ? { revoked } : {}) } };
+    }
+  }
+  return { fail: 'tx_failed', message: 'The transaction was sent, but its effect never showed on the node' };
 }
 
 /** The latest block time, never later than the clock; null without a usable one. */

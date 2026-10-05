@@ -12,6 +12,7 @@ import {
   validateSessionRequest,
   verifyProof,
 } from '@inject/gnoconnect/session-request';
+import { readBack } from '@inject/gnoconnect/session-tx';
 import {
   GNOCONNECT_SESSION_CHECK,
   GNOCONNECT_SESSION_CONNECT,
@@ -34,6 +35,9 @@ export const GNOCONNECT_SESSION_TYPES: ReadonlySet<string> = new Set([
 /** The chain's cap, expired sessions included. */
 const MAX_SESSIONS = 16;
 const REPLAY_WINDOW = 600;
+/** How long the effect of a sent transaction is looked for, as the review does. */
+const READBACK_TRIES = 20;
+const READBACK_MS = 1000;
 
 export interface SessionMessageData {
   host: SessionHost;
@@ -61,6 +65,11 @@ export interface SessionReviewRequest {
   onChainOld: boolean;
 }
 
+/** The review window closed after its transaction left, before it could answer. */
+export interface ClosedAfterSend {
+  closedAfterSend: true;
+}
+
 export interface SessionIdentity {
   address: string;
   pubkey: string | null;
@@ -80,7 +89,8 @@ export interface SessionDeps {
   chainNow(): Promise<number | null>;
   clock(): number;
   /** Opens the review window and resolves with its answer. */
-  review(request: SessionReviewRequest): Promise<GnoSessionAnswer>;
+  review(request: SessionReviewRequest): Promise<GnoSessionAnswer | ClosedAfterSend>;
+  wait(ms: number): Promise<void>;
 }
 
 /** A session answer: the page's response, or a genuine failure the provider throws. */
@@ -94,33 +104,67 @@ export const FEATURES = ['sendtx', 'signtx', 'multi_msg', 'sessions'];
  * request is acted on once.
  */
 export interface ReplayMemory {
-  check(pubkey: string, state: string, now: number): boolean;
-  consume(pubkey: string, state: string, now: number): boolean;
+  check(pubkey: string, state: string, now: number): Promise<boolean>;
+  consume(pubkey: string, state: string, now: number): Promise<boolean>;
 }
 
-export function createReplayMemory(): ReplayMemory {
-  const seen = new Map<string, { at: number; consumed: boolean }>();
-  const prune = (now: number): void => {
-    seen.forEach((v, k) => {
-      if (now - v.at > REPLAY_WINDOW) seen.delete(k);
+export type ReplayEntries = Record<string, { at: number; consumed: boolean }>;
+
+/** Where the marks live: Chrome may stop the service worker between two messages. */
+export interface ReplayStore {
+  load(): Promise<ReplayEntries>;
+  save(entries: ReplayEntries): Promise<void>;
+}
+
+function memoryStore(): ReplayStore {
+  let entries: ReplayEntries = {};
+  return {
+    load: async () => entries,
+    save: async (next): Promise<void> => {
+      entries = next;
+    },
+  };
+}
+
+export function createReplayMemory(store: ReplayStore = memoryStore()): ReplayMemory {
+  // One read-modify-write at a time, or two copies of a request could both pass.
+  let queue: Promise<unknown> = Promise.resolve();
+  const update = (now: number, step: (seen: ReplayEntries) => boolean): Promise<boolean> => {
+    const run = queue.then(async () => {
+      const seen: ReplayEntries = {};
+      Object.entries(await store.load()).forEach(([k, v]) => {
+        if (now - v.at <= REPLAY_WINDOW) seen[k] = v;
+      });
+      const answer = step(seen);
+      await store.save(seen);
+      return answer;
     });
+    queue = run.catch(() => undefined);
+    return run;
   };
   const id = (pubkey: string, state: string): string => JSON.stringify([pubkey, state]);
   return {
-    check(pubkey, state, now): boolean {
-      prune(now);
-      if (seen.has(id(pubkey, state))) return false;
-      seen.set(id(pubkey, state), { at: now, consumed: false });
-      return true;
-    },
-    consume(pubkey, state, now): boolean {
-      prune(now);
-      const entry = seen.get(id(pubkey, state));
-      if (!entry || entry.consumed) return false;
-      entry.consumed = true;
-      return true;
-    },
+    check: (pubkey, state, now) =>
+      update(now, (seen) => {
+        if (seen[id(pubkey, state)]) return false;
+        seen[id(pubkey, state)] = { at: now, consumed: false };
+        return true;
+      }),
+    consume: (pubkey, state, now) =>
+      update(now, (seen) => {
+        const entry = seen[id(pubkey, state)];
+        if (!entry || entry.consumed) return false;
+        entry.consumed = true;
+        return true;
+      }),
   };
+}
+
+/** The review's answer; when its window is gone after sending, the chain's. */
+async function reviewed(deps: SessionDeps, request: SessionReviewRequest): Promise<SessionAnswer> {
+  const answer = await deps.review(request);
+  if (!('closedAfterSend' in answer)) return answer;
+  return readBack(request, deps.getSession, () => deps.wait(READBACK_MS), READBACK_TRIES);
 }
 
 const rejected = (code?: GnoErrorCode): UserResponse<never> =>
@@ -183,7 +227,7 @@ async function connectWithKey(deps: SessionDeps, fields: SessionRequestFields): 
     return rejected('session_limit');
   }
 
-  const answer = await deps.review({
+  const answer = await reviewed(deps, {
     host: 'connect',
     fields,
     origin: deps.origin,
@@ -204,7 +248,7 @@ async function disconnectWithKey(deps: SessionDeps, fields: SessionRequestFields
 
   const key = decodeGpub(fields.pubkey);
   if (!(await deps.getSession(identity.address, key.address))) return rejected('session_not_found');
-  return deps.review({
+  return reviewed(deps, {
     host: 'disconnect',
     fields,
     origin: deps.origin,
@@ -236,7 +280,7 @@ export async function answerSessionMessage(
     try {
       if (data.fields === null || data.fields === undefined) return { status: 'Approved', args: {} };
       const fields = await checked(deps, 'disconnect', data.fields);
-      if (!memory.consume(fields.pubkey, fields.state, deps.clock())) return rejected('invalid_request');
+      if (!(await memory.consume(fields.pubkey, fields.state, deps.clock()))) return rejected('invalid_request');
       return await disconnectWithKey(deps, fields);
     } catch (error) {
       return asAnswer(error);
@@ -250,12 +294,12 @@ export async function answerSessionMessage(
     if (type === GNOCONNECT_SESSION_CHECK) {
       // A repeat is not acted on again. In-page each call has its own promise,
       // so it is answered rather than dropped: that cannot close the first.
-      return memory.check(fields.pubkey, fields.state, deps.clock())
+      return (await memory.check(fields.pubkey, fields.state, deps.clock()))
         ? { status: 'Approved', args: {} }
         : rejected('invalid_request');
     }
     if (type === GNOCONNECT_SESSION_CONNECT && host === 'connect') {
-      if (!memory.consume(fields.pubkey, fields.state, deps.clock())) return rejected('invalid_request');
+      if (!(await memory.consume(fields.pubkey, fields.state, deps.clock()))) return rejected('invalid_request');
       return await connectWithKey(deps, fields);
     }
     return rejected('invalid_request');

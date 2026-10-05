@@ -2,10 +2,7 @@
 import { isSessionAccount } from 'adena-module';
 
 import { GnoProvider } from '@common/provider/gno/gno-provider';
-import { StorageManager } from '@common/storage/storage-manager';
-import { WalletEstablishRepository } from '@repositories/wallet';
-import { WalletEstablishService } from '@services/wallet';
-import { GnoSessionAnswer } from '@inject/gnoconnect/types';
+import { GNOCONNECT_SESSION_SENT, GnoSessionAnswer } from '@inject/gnoconnect/types';
 import { RoutePath } from '@types';
 
 import { InjectionMessage } from '../message';
@@ -13,21 +10,24 @@ import { createPopup } from './common';
 import { InjectCore } from './core';
 import {
   answerSessionMessage,
+  ClosedAfterSend,
   createReplayMemory,
+  ReplayEntries,
   SessionDeps,
   SessionMessageData,
   SessionReviewRequest,
   toSessionReply,
 } from './gno-connect-session';
 
-// Service-worker memory: lost when Chrome stops the worker, which the `iat`
-// window bounds anyway.
-const memory = createReplayMemory();
+// In the extension's storage, not the worker's memory: Chrome stops an idle
+// worker, and a request replayed after that must still be refused.
+const REPLAY_KEY = 'GNOCONNECT_SESSION_REPLAY';
+const memory = createReplayMemory({
+  load: async () => ((await chrome.storage.local.get(REPLAY_KEY))[REPLAY_KEY] as ReplayEntries) ?? {},
+  save: (entries) => chrome.storage.local.set({ [REPLAY_KEY]: entries }),
+});
 
-/**
- * The requesting page as the browser saw it. `message.hostname` is stamped in
- * the page world, so the page could write anything there.
- */
+/** The requesting page as the browser saw it, port included. */
 function pageUrl(message: InjectionMessage, sender: chrome.runtime.MessageSender): URL {
   try {
     if (sender.url) return new URL(sender.url);
@@ -60,16 +60,8 @@ export function sessionDeps(
   return {
     origin: url.origin,
     isEstablished: async () => core.establishService.isEstablishedBy(await core.getCurrentAccountId(), siteName),
-    withdrawApproval: async (): Promise<void> => {
-      // Through a throwaway storage: the background's shared one keeps the whole
-      // store in memory after its first write, and would then miss what a popup
-      // writes later, such as this origin approved again.
-      const establish = new WalletEstablishService(
-        new WalletEstablishRepository(new StorageManager()),
-        core.chainRegistry,
-      );
-      await establish.unEstablishBy(await core.getCurrentAccountId(), siteName);
-    },
+    withdrawApproval: async (): Promise<void> =>
+      core.establishService.unEstablishBy(await core.getCurrentAccountId(), siteName),
     network,
     identity: async (): ReturnType<SessionDeps['identity']> => {
       const inMemoryKey = await core.getInMemoryKey();
@@ -105,19 +97,30 @@ export function sessionDeps(
     },
     clock,
     review: (request: SessionReviewRequest) =>
-      new Promise<GnoSessionAnswer>((resolve) => {
-        const closed = { ...toSessionReply({ status: 'Rejected' }), key: message.key } as unknown as InjectionMessage;
+      new Promise<GnoSessionAnswer | ClosedAfterSend>((resolve) => {
+        // Once the window says it is sending, closing it is no longer a refusal.
+        let sent = false;
+        const onSent = (m: { type?: string; review?: string }, from: chrome.runtime.MessageSender): void => {
+          if (from.id === chrome.runtime.id && m?.type === GNOCONNECT_SESSION_SENT && m.review === message.key) {
+            sent = true;
+          }
+        };
+        chrome.runtime.onMessage.addListener(onSent);
+        // Closed by the user, by the extension, or never opened: no answer inside.
+        const closed = { key: message.key, status: 'success', type: 'GNOCONNECT_SESSION_CLOSED' } as unknown as InjectionMessage;
         createPopup(
           RoutePath.ApproveGnoConnectSession,
           { ...message, hostname: url.hostname, protocol: url.protocol, data: request as unknown as Record<string, unknown> },
           closed,
           (reply: InjectionMessage) => {
+            chrome.runtime.onMessage.removeListener(onSent);
             const answer = reply?.data?.gnoconnect as GnoSessionAnswer | undefined;
-            // Force-closed by the extension (another request took over): not the user's answer.
-            resolve(answer && ('status' in answer || 'fail' in answer) ? answer : { status: 'Rejected' });
+            if (answer && ('status' in answer || 'fail' in answer)) resolve(answer);
+            else resolve(sent ? { closedAfterSend: true } : { status: 'Rejected' });
           },
         );
       }),
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   };
 }
 

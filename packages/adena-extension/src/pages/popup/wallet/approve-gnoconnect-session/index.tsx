@@ -13,8 +13,14 @@ import { BottomFixedButtonGroup } from '@components/molecules/bottom-fixed-butto
 import { SessionDetailCard } from '@components/molecules/session-detail-card';
 import { useAdenaContext, useWalletContext } from '@hooks/use-context';
 import { decodeGpub } from '@inject/gnoconnect/session-request';
-import { buildSessionMessages, composeNow, reviewModel } from '@inject/gnoconnect/session-tx';
-import { GnoSessionAnswer } from '@inject/gnoconnect/types';
+import {
+  buildSessionMessages,
+  ChainSession,
+  composeNow,
+  readBack,
+  reviewModel,
+} from '@inject/gnoconnect/session-tx';
+import { GNOCONNECT_SESSION_SENT, GnoSessionAnswer } from '@inject/gnoconnect/types';
 import { SessionReviewRequest } from '@inject/message/methods/gno-connect-session';
 import { RoutePath } from '@types';
 import mixins from '@styles/mixins';
@@ -181,42 +187,26 @@ const ApproveGnoConnectSession = (): ReactElement => {
     setSending(true);
     try {
       const { signed } = await transactionService.createTransaction(wallet, signer, document);
+      // From here, closing the window does not refuse: the background reads the chain.
+      await chrome.runtime.sendMessage({ type: GNOCONNECT_SESSION_SENT, review: key }).catch(() => undefined);
       const result = (await transactionService.sendTransaction(wallet, signer, signed, true)) as CommitResultLike;
       const failed = result?.check_tx?.ResponseBase?.Error || result?.deliver_tx?.ResponseBase?.Error;
       if (failed) {
         throw new Error(result?.deliver_tx?.ResponseBase?.Log || result?.check_tx?.ResponseBase?.Log || 'The transaction failed');
       }
       const hash = result?.hash ?? undefined;
-      const keyAddress = decodeGpub(request.fields.pubkey).address;
-      for (let i = 0; i < POLL_TRIES; i++) {
-        const session = await gnoProvider.getSession(request.identity, keyAddress).catch(() => null);
-        if (request.host === 'disconnect' && !session) {
-          reply({ status: 'Approved', args: { revoked: keyAddress, hash } });
-          return;
-        }
-        if (request.host === 'connect' && session) {
-          const revoked = request.fields.old && request.onChainOld ? decodeGpub(request.fields.old).address : undefined;
-          reply({
-            status: 'Approved',
-            args: {
-              session: keyAddress,
-              expiresAt: session.expires_at ?? 0,
-              allow: session.allow_paths ?? [],
-              spend: session.spend_limit ?? '',
-              period: session.spend_period ?? 0,
-              ...(revoked ? { revoked } : {}),
-              hash,
-            },
-          });
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-      }
-      reply({ fail: 'tx_failed', message: 'The transaction was sent, but its effect never showed on the node' });
+      const read = async (master: string, session: string): Promise<ChainSession | null> => {
+        const s = await gnoProvider.getSession(master, session);
+        return s
+          ? { expiresAt: s.expires_at ?? 0, allow: s.allow_paths ?? [], spend: s.spend_limit ?? '', period: s.spend_period ?? 0 }
+          : null;
+      };
+      const answer = await readBack(request, read, () => new Promise((r) => setTimeout(r, POLL_MS)), POLL_TRIES);
+      reply('status' in answer && answer.status === 'Approved' ? { ...answer, args: { ...(answer.args as object), hash } } : answer);
     } catch (e) {
       reply({ fail: 'tx_failed', message: (e as Error)?.message ?? 'The transaction failed' });
     }
-  }, [request, wallet, signer, document, gnoProvider, transactionService, reply]);
+  }, [request, wallet, signer, document, gnoProvider, transactionService, reply, key]);
 
   const reject = useCallback(() => reply({ status: 'Rejected' }), [reply]);
 

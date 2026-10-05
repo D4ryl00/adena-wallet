@@ -682,6 +682,10 @@ describe('GnoConnect sessions, end to end', () => {
       reviews: SessionReviewRequest[];
       withdrawals: number;
       reviewAnswer: unknown;
+      /** Runs when the review opens: what the user's transaction does on chain. */
+      onReview: () => void;
+      /** Reads of the chain the background left until the effect shows. */
+      waits: number;
       isSession: boolean;
     };
     deps: SessionDeps;
@@ -695,6 +699,8 @@ describe('GnoConnect sessions, end to end', () => {
       reviews: [],
       withdrawals: 0,
       reviewAnswer: { status: 'Rejected' } as unknown,
+      onReview: (): void => undefined,
+      waits: 0,
       isSession: false,
     };
     const deps: SessionDeps = {
@@ -712,7 +718,11 @@ describe('GnoConnect sessions, end to end', () => {
       clock: () => NOW,
       review: async (request: SessionReviewRequest): Promise<UserResponse<unknown>> => {
         state.reviews.push(request);
+        state.onReview();
         return state.reviewAnswer as UserResponse<unknown>;
+      },
+      wait: async (): Promise<void> => {
+        state.waits++;
       },
     };
     return { state, deps, memory: sessionMethods.createReplayMemory() };
@@ -815,6 +825,78 @@ describe('GnoConnect sessions, end to end', () => {
     expect(answer).toMatchObject({
       status: 'Approved',
       args: { address: IDENTITY, session: KEY.address, expiresAt: NOW + 100, allow: ['bank/send'], spend: '1ugnot', period: 0 },
+    });
+  });
+
+  // The user closed the review after the transaction left: the chain answers.
+  const CLOSED_AFTER_SEND = { closedAfterSend: true };
+  const GRANTED: Session = { expiresAt: NOW + 86400, allow: ['vm/exec:gno.land/r/demo/game'], spend: '5000000ugnot', period: 3600 };
+
+  it('answers a grant from the chain when the review closes after sending it', async () => {
+    const w = wallet();
+    w.state.reviewAnswer = CLOSED_AFTER_SEND;
+    // The effect shows on the node a few reads later.
+    const getSession = w.deps.getSession;
+    w.deps.getSession = async (master, address): Promise<Session | null> => {
+      if (w.state.reviews.length > 0 && w.state.waits === 2) w.state.sessions.set(KEY.address, GRANTED);
+      return getSession(master, address);
+    };
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    await expect(provider.connect(signed('connect', grantFields()))).resolves.toEqual({
+      status: 'Approved',
+      args: {
+        address: IDENTITY, chainid: ACTIVE_CHAIN_ID, pubkey: 'gpub1identity', features: ['sendtx', 'signtx', 'multi_msg', 'sessions'],
+        session: KEY.address, ...GRANTED,
+      },
+    });
+  });
+
+  it('answers tx_failed when the review closes after sending and nothing ever shows', async () => {
+    const w = wallet();
+    w.state.reviewAnswer = CLOSED_AFTER_SEND;
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    await expect(provider.connect(signed('connect', grantFields()))).rejects.toMatchObject({ code: 'tx_failed' });
+    expect(w.state.waits).toBeGreaterThan(0);
+  });
+
+  it('answers a revocation from the chain when the review closes after sending it', async () => {
+    const w = wallet();
+    w.state.sessions.set(KEY.address, GRANTED);
+    w.state.reviewAnswer = CLOSED_AFTER_SEND;
+    w.state.onReview = (): void => {
+      w.state.sessions.delete(KEY.address);
+    };
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    await expect(provider.disconnect(signed('disconnect', disconnectFields()))).resolves.toEqual({
+      status: 'Approved',
+      args: { revoked: KEY.address },
+    });
+  });
+
+  it('reads the old key revoked in the same transaction into the answer', async () => {
+    const w = wallet();
+    const OLD = newKey('02');
+    w.state.sessions.set(OLD.address, GRANTED);
+    w.state.reviewAnswer = CLOSED_AFTER_SEND;
+    w.state.onReview = (): void => {
+      w.state.sessions.delete(OLD.address);
+      w.state.sessions.set(KEY.address, GRANTED);
+    };
+    teardown.push(sessionBridge(w));
+    const { provider } = await discoverWallet();
+
+    const fields = { ...grantFields(), old: OLD.gpub, signer: IDENTITY };
+    const data = new TextEncoder().encode(canonicalPayload('connect', { ...fields, sig: '' }));
+    const req = { ...fields, sig: b64url(KEY.sign(data)), oldsig: b64url(OLD.sign(data)) } as unknown as SignedRequest;
+    await expect(provider.connect(req)).resolves.toMatchObject({
+      status: 'Approved',
+      args: { session: KEY.address, revoked: OLD.address },
     });
   });
 

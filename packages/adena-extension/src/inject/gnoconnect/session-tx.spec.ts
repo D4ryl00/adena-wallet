@@ -1,4 +1,4 @@
-import { buildSessionMessages, composeNow, reviewModel } from './session-tx';
+import { buildSessionMessages, composeNow, readBack, reviewModel } from './session-tx';
 
 const ED_GPUB =
   'gpub1pggj7ard9eg82cjtv4u52epjx56nzwgjyg9zq7d42chglej5l9q83vgjaz5chfusr7zn4e54hmt7pcu3pwksf9ny6h7lpd';
@@ -106,5 +106,50 @@ describe('reviewModel', () => {
     ]);
     expect(reviewModel(fields, false).keys[0].value).toBe(`${ED_ADDR} (no longer on chain: nothing is replaced)`);
     expect(reviewModel(grant, false).keys).toEqual([{ label: 'Key', value: ED_ADDR }]);
+  });
+});
+
+describe('readBack', () => {
+  const LIVE = { expiresAt: NOW + 86400, allow: grant.allow, spend: '5000000ugnot', period: 3600 };
+  const connect = { host: 'connect' as const, fields: grant, identity: IDENTITY, onChainOld: false };
+  const disconnect = { host: 'disconnect' as const, fields: { pubkey: ED_GPUB, chainid: 'dev', state: 's', iat: NOW, sig: 'AA' }, identity: IDENTITY, onChainOld: false };
+  const noWait = async (): Promise<void> => undefined;
+
+  it('answers a grant once the session shows', async () => {
+    const reads = [null, null, LIVE];
+    const read = jest.fn(async () => reads.shift() ?? null);
+    await expect(readBack(connect, read, noWait, 5)).resolves.toEqual({
+      status: 'Approved',
+      args: { session: ED_ADDR, ...LIVE },
+    });
+    expect(read).toHaveBeenCalledWith(IDENTITY, ED_ADDR);
+    expect(read).toHaveBeenCalledTimes(3);
+  });
+
+  it('names the old key it revoked in the same transaction', async () => {
+    const renewal = { ...connect, fields: { ...grant, old: SECP_GPUB, signer: IDENTITY, oldsig: 'AA' }, onChainOld: true };
+    await expect(readBack(renewal, async () => LIVE, noWait, 1)).resolves.toMatchObject({
+      args: { session: ED_ADDR, revoked: SECP_ADDR },
+    });
+  });
+
+  it('answers a revocation once the session is gone', async () => {
+    await expect(readBack(disconnect, async () => null, noWait, 1)).resolves.toEqual({
+      status: 'Approved',
+      args: { revoked: ED_ADDR },
+    });
+  });
+
+  it('does not take a failed read for a revocation', async () => {
+    const read = async (): Promise<null> => {
+      throw new Error('node down');
+    };
+    await expect(readBack(disconnect, read, noWait, 3)).resolves.toMatchObject({ fail: 'tx_failed' });
+  });
+
+  it('answers tx_failed when the effect never shows', async () => {
+    const wait = jest.fn(noWait);
+    await expect(readBack(connect, async () => null, wait, 4)).resolves.toMatchObject({ fail: 'tx_failed' });
+    expect(wait).toHaveBeenCalledTimes(3);
   });
 });

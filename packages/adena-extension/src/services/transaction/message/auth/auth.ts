@@ -6,6 +6,8 @@ import {
   MSG_REVOKE_SESSION_ENDPOINT,
 } from 'adena-module';
 
+import type { DecodedKey } from '@inject/gnoconnect/session-request';
+
 // Chain-side limits for MsgCreateSession. In the merged session-account
 // protocol, allow_paths is required and uses typed entries:
 // "*" or <route>/<type>[:<path>].
@@ -29,9 +31,13 @@ const VALID_SESSION_ROUTE_TYPES = new Set([
 // effective server contract.
 const COIN_ENTRY_REGEX = /^([0-9]+)\s*([a-z/][a-z0-9_.:/]{2,})$/;
 
+// A bare Uint8Array is a secp256k1 key (compressed or not), as it always was;
+// a DecodedKey says its own type, which is how an Ed25519 key gets here.
+type SessionPublicKey = Uint8Array | DecodedKey;
+
 interface CreateSessionMessageInfo {
   creator: string;
-  sessionPublicKey: Uint8Array;
+  sessionPublicKey: SessionPublicKey;
   expiresAt: SessionInteger;
   allowPaths: string[];
   spendLimit: string;
@@ -51,15 +57,25 @@ type SessionInteger =
 
 interface RevokeSessionMessageInfo {
   creator: string;
-  sessionPublicKey: Uint8Array;
+  sessionPublicKey: SessionPublicKey;
 }
 
 interface RevokeAllSessionsMessageInfo {
   creator: string;
 }
 
-const wrapSessionPubKey = (sessionPublicKey: Uint8Array): Any => {
-  const compressed = compressPubkeyIfNeeded(sessionPublicKey);
+const ED25519_PUBKEY_TYPE = '/tm.PubKeyEd25519';
+
+const wrapSessionPubKey = (sessionPublicKey: SessionPublicKey): Any => {
+  if (!(sessionPublicKey instanceof Uint8Array) && sessionPublicKey.type === 'ed25519') {
+    // PubKeyEd25519 { bytes key = 1 }: tm2-js-client has no type for it.
+    return Any.create({
+      type_url: ED25519_PUBKEY_TYPE,
+      value: Uint8Array.from([0x0a, sessionPublicKey.key.length, ...sessionPublicKey.key]),
+    });
+  }
+  const key = sessionPublicKey instanceof Uint8Array ? sessionPublicKey : sessionPublicKey.key;
+  const compressed = compressPubkeyIfNeeded(key);
   return Any.create({
     type_url: Secp256k1PubKeyType,
     value: PubKeySecp256k1.encode({ key: compressed }).finish(),

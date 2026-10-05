@@ -65,7 +65,9 @@ export class ChromeLocalStorage implements Storage {
 
   private migrator: StorageMigrator;
 
-  private current: StorageModelLatest | null = null;
+  // Writes from this context, one after the other. The store is read again for
+  // each one: other contexts (background, popup) write to it too.
+  private writes: Promise<void> = Promise.resolve();
 
   constructor() {
     if (!chrome.storage) {
@@ -99,39 +101,39 @@ export class ChromeLocalStorage implements Storage {
 
   public updatePassword = async (password: string): Promise<StorageModelLatest | null> => {
     const current = await this.migrator.getCurrent();
-    this.current = await this.migrator.migrate(current, password);
-    if (this.current) {
+    const latest = await this.migrator.migrate(current, password);
+    if (latest) {
       await this.storage.set({
-        [ChromeLocalStorage.StorageKey]: JSON.stringify(this.current),
+        [ChromeLocalStorage.StorageKey]: JSON.stringify(latest),
       });
     }
-    return this.current;
+    return latest;
   };
 
   private getStorageData = async (): Promise<any | null> => {
-    if (this.current === null) {
-      return this.migrator.getCurrent();
-    }
-    return this.current;
+    return this.migrator.getCurrent();
   };
 
-  private setStorageData = async (key: string, value: any): Promise<void> => {
-    this.current = await this.getStorageData();
-    if (!this.current) {
-      return;
-    }
+  private setStorageData = (key: string, value: any): Promise<void> => {
+    const write = this.writes.then(async () => {
+      const current = await this.getStorageData();
+      if (!current) {
+        return;
+      }
 
-    const storageData = {
-      ...this.current,
-      data: {
-        ...this.current.data,
-        [key]: value,
-      },
-    };
+      const storageData = {
+        ...current,
+        data: {
+          ...current.data,
+          [key]: value,
+        },
+      };
 
-    this.current = storageData;
-    await this.storage.set({
-      [ChromeLocalStorage.StorageKey]: JSON.stringify(storageData),
+      await this.storage.set({
+        [ChromeLocalStorage.StorageKey]: JSON.stringify(storageData),
+      });
     });
+    this.writes = write.catch(() => undefined);
+    return write;
   };
 }

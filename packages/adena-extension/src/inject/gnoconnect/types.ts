@@ -74,7 +74,15 @@ export type GnoErrorCode =
   /** In-page only: the origin has not been approved. */
   | 'not_connected'
   | 'unsupported_host'
-  | 'tx_failed';
+  | 'tx_failed'
+  /** Sessions: a proof that does not verify against its key. */
+  | 'invalid_proof'
+  /** Sessions: `iat` outside the wallet's window. */
+  | 'stale_request'
+  | 'session_expired'
+  | 'session_not_found'
+  /** Sessions: the identity has no free slot (16, expired ones included). */
+  | 'session_limit';
 
 /** A declining user is `Rejected`; only a genuine failure rejects the promise. */
 export type UserResponse<T> =

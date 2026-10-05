@@ -66,7 +66,7 @@ const wrapSessionPubKey = (sessionPublicKey: Uint8Array): Any => {
   });
 };
 
-const validateAllowPaths = (allowPaths: string[]): void => {
+export const validateAllowPaths = (allowPaths: string[]): void => {
   if (allowPaths.length === 0) {
     throw new Error('allow_paths is required. Use ["*"] for unrestricted access.');
   }
@@ -172,7 +172,7 @@ const validateExpiresAt = (expiresAt: SessionInteger): void => {
 // Validates spend_limit against gno ParseCoins + Coins.validate() (coin.go).
 // Empty string is allowed and means "no spending" (fail-closed); useful only
 // when a co-signer pays gas.
-const validateSpendLimit = (spendLimit: string): void => {
+export const validateSpendLimit = (spendLimit: string): void => {
   const trimmed = spendLimit.trim();
   if (trimmed === '') {
     return;

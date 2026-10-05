@@ -11,6 +11,7 @@ import {
 import { existsPopups, removePopups } from './methods';
 import { InjectCore } from './methods/core';
 import { gnoConnectSession } from './methods/gno-connect-session-deps';
+import { stampSenderOrigin } from './sender-origin';
 
 // A session CHECK opens nothing, so it must not close another page's approval either.
 const NON_POPUP_REQUEST_TYPES: ReadonlySet<string> = new Set([
@@ -31,7 +32,7 @@ export class MessageHandler {
         const status = message?.status;
         switch (status) {
           case 'request':
-            this.requestHandler(inMemoryProvider, message, sender, sendResponse);
+            this.requestHandler(inMemoryProvider, stampSenderOrigin(message, sender), sender, sendResponse);
             break;
           case 'failure':
           case 'success':

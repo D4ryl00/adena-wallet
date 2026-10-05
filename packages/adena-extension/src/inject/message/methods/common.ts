@@ -32,6 +32,12 @@ export const createPopup = async (
 
   chrome.windows.create(popupOption, async (windowResponse) => {
     if (!windowResponse) {
+      // Chrome refused the window (e.g. bounds off screen): nothing will ever
+      // answer the page unless this does.
+      console.warn('Adena could not open its window:', chrome.runtime.lastError?.message);
+      sendResponse(
+        InjectionMessageInstance.failure(WalletResponseFailureType.UNEXPECTED_ERROR, {}, message.key),
+      );
       return;
     }
 

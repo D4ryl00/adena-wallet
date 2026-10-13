@@ -7,6 +7,8 @@ jest.mock('@adena-wallet/sdk', () => ({
     REDUNDANT_CHANGE_REQUEST: 'REDUNDANT_CHANGE_REQUEST',
     INVALID_FORMAT: 'INVALID_FORMAT',
     WALLET_LOCKED: 'WALLET_LOCKED',
+    ACCOUNT_MISMATCH: 'ACCOUNT_MISMATCH',
+    UNSUPPORTED_TYPE: 'UNSUPPORTED_TYPE',
   },
   WalletResponseRejectType: {
     TRANSACTION_REJECTED: 'TRANSACTION_REJECTED',
@@ -282,6 +284,98 @@ describe('GnoConnect handshake, end to end', () => {
       },
     });
     expect((answer as { args: { pubkey: string } }).args.pubkey).toMatch(/^gpub1/);
+  });
+
+  /** The wallet's side of a challenge; `over` replaces the answer to a request type. */
+  const challengeWallet = (
+    seen: string[],
+    over: Record<string, (n: number) => Record<string, unknown>> = {},
+  ): (() => void) => {
+    const count: Record<string, number> = {};
+    return bridge((request) => {
+      seen.push(request.type);
+      count[request.type] = (count[request.type] ?? 0) + 1;
+      const answer = over[request.type];
+      if (answer) return answer(count[request.type]) as never;
+      if (request.type === 'ADD_ESTABLISH') return { status: 'success', type: 'CONNECTION_SUCCESS', data: {} };
+      if (request.type === 'GET_NETWORK') {
+        return { status: 'success', type: 'GET_NETWORK', data: { chainId: 'dev', rpcUrl: 'http://127.0.0.1:26657' } };
+      }
+      if (request.type === 'GET_ACCOUNT') {
+        return { status: 'success', type: 'GET_ACCOUNT', data: { address: 'g1jg8mtutu9khhfwc4nxmuhcpftf0pajdhfvsqf5' } };
+      }
+      return {
+        status: 'success',
+        type: 'SIGN_ARBITRARY',
+        data: {
+          signed: { chain_id: 'dev' },
+          signature: {
+            pubKey: { typeUrl: '/tm.PubKeySecp256k1', value: 'A+FhNtsXHjLfSJk1lB8FbiL4mGPjc50Kt81J7EKDnJ2y' },
+            signature: 'c2ln',
+          },
+        },
+      };
+    });
+  };
+
+  it.each(['ACCOUNT_MISMATCH', 'UNSUPPORTED_TYPE'])(
+    'answers a challenge the account cannot sign (%s) as Rejected signer_unavailable',
+    async (type) => {
+      const seen: string[] = [];
+      teardown.push(
+        challengeWallet(seen, { SIGN_ARBITRARY: () => ({ status: 'failure', type, code: 4000, data: null }) }),
+      );
+      const { provider } = await discoverWallet();
+      await expect(provider.connect({ challenge: 'example.com: prove it', chainid: 'dev' })).resolves.toEqual({
+        status: 'Rejected',
+        code: 'signer_unavailable',
+      });
+    },
+  );
+
+  it('refuses a challenge with bad scope hints, as a plain connect does, before any window', async () => {
+    const seen: string[] = [];
+    teardown.push(challengeWallet(seen));
+    const { provider } = await discoverWallet();
+    await expect(
+      provider.connect({ challenge: 'example.com: prove it', chainid: 'dev', allow: ['bank/nope'] }),
+    ).resolves.toEqual({ status: 'Rejected', code: 'invalid_request' });
+    expect(seen).toEqual([]);
+  });
+
+  it('switches to the chain a challenge names before signing, and a declined switch is network_declined', async () => {
+    const onOther = (n: number): Record<string, unknown> => ({
+      status: 'success',
+      type: 'GET_NETWORK',
+      data: { chainId: n === 1 ? 'other' : 'dev', rpcUrl: 'http://127.0.0.1:26657' },
+    });
+    const seen: string[] = [];
+    teardown.push(
+      challengeWallet(seen, {
+        GET_NETWORK: onOther,
+        SWITCH_NETWORK: () => ({ status: 'success', type: 'SWITCH_NETWORK', data: {} }),
+      }),
+    );
+    let { provider } = await discoverWallet();
+    await expect(provider.connect({ challenge: 'example.com: prove it', chainid: 'dev' })).resolves.toMatchObject({
+      status: 'Approved',
+    });
+    expect(seen).toEqual(['ADD_ESTABLISH', 'GET_NETWORK', 'SWITCH_NETWORK', 'GET_NETWORK', 'GET_ACCOUNT', 'SIGN_ARBITRARY']);
+    teardown.splice(0).forEach((stop) => stop());
+
+    const declined: string[] = [];
+    teardown.push(
+      challengeWallet(declined, {
+        GET_NETWORK: onOther,
+        SWITCH_NETWORK: () => ({ status: 'failure', type: 'SWITCH_NETWORK_REJECTED', code: 4000, data: null }),
+      }),
+    );
+    ({ provider } = await discoverWallet());
+    await expect(provider.connect({ challenge: 'example.com: prove it', chainid: 'dev' })).resolves.toEqual({
+      status: 'Rejected',
+      code: 'network_declined',
+    });
+    expect(declined).not.toContain('SIGN_ARBITRARY');
   });
 
   it('does not disclose the account when the connection is declined', async () => {

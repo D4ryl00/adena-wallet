@@ -1,3 +1,4 @@
+import { WalletResponseFailureType } from '@adena-wallet/sdk';
 import { AdenaExecutor, ExecutorTransport } from '@inject/executor/executor';
 import {
   normalizeGnoConnectRpc,
@@ -360,6 +361,11 @@ async function disconnectFrom(
   return session(host, GNOCONNECT_SESSION_DISCONNECT, data);
 }
 
+const SIGNER_FAILURES: ReadonlySet<string> = new Set<string>([
+  WalletResponseFailureType.ACCOUNT_MISMATCH,
+  WalletResponseFailureType.UNSUPPORTED_TYPE,
+]);
+
 /** The wallet's side of `connect` with a challenge: the existing executor calls. */
 function challengeSteps(host: ProviderHost): ChallengeSteps {
   return {
@@ -379,7 +385,16 @@ function challengeSteps(host: ProviderHost): ChallengeSteps {
     },
     async sign(signer, data): Promise<UserResponse<SignedText>> {
       const response = await host.executor().signArbitrary({ signer, data });
-      return toUserResponse(response, (d) => d as unknown as SignedText);
+      try {
+        return toUserResponse(response, (d) => d as unknown as SignedText);
+      } catch (error) {
+        // Another account at signing time, or one that cannot sign a text (a
+        // session or multisig account): the identity is not to hand.
+        if (error instanceof GnoConnectError && SIGNER_FAILURES.has(error.type)) {
+          throw new GnoConnectRequestError('signer_unavailable', error.message);
+        }
+        throw error;
+      }
     },
   };
 }
@@ -414,6 +429,14 @@ export function createGnoConnectProvider(host: ProviderHost = pageHost): GnoConn
     },
 
     async connect(opts) {
+      if (opts?.challenge !== undefined && opts.pubkey === undefined) {
+        // Hints are validated as on a plain connect, before any window.
+        try {
+          validateScopeHints(opts);
+        } catch (error) {
+          return rejected((error as GnoConnectRequestError).code);
+        }
+      }
       if (opts?.challenge !== undefined) {
         const answer = await connectWithChallenge(challengeSteps(host), opts, FEATURES);
         if (answer.status === 'Approved') {

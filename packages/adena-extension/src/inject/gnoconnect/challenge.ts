@@ -12,6 +12,9 @@ export const MAX_CHALLENGE_BYTES = 4096;
 /** C0, DEL and C1, as Go's unicode.IsControl. */
 const isControl = (c: number): boolean => c <= 0x1f || (c >= 0x7f && c <= 0x9f);
 
+/** A surrogate with no partner: not text, and UTF-8 would sign U+FFFD in its place. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
 /** The standard's rules for a challenge; returns the text. */
 export function validateChallenge(opts: GnoConnectOptions): string {
   const { challenge } = opts;
@@ -22,6 +25,7 @@ export function validateChallenge(opts: GnoConnectOptions): string {
   if (typeof challenge !== 'string' || challenge === '') return bad('empty');
   if (new TextEncoder().encode(challenge).length > MAX_CHALLENGE_BYTES) bad(`over ${MAX_CHALLENGE_BYTES} bytes`);
   if ([...challenge].some((c) => isControl(c.codePointAt(0) ?? 0))) bad('a control character');
+  if (LONE_SURROGATE.test(challenge)) bad('not well-formed text (a lone surrogate)');
   return challenge;
 }
 
@@ -62,6 +66,9 @@ export async function connectWithChallenge(
 ): Promise<UserResponse<GnoAccount>> {
   try {
     const challenge = validateChallenge(opts);
+    if (opts.signer !== undefined && typeof opts.signer !== 'string') {
+      throw new GnoConnectRequestError('invalid_request', 'signer: not an address');
+    }
     const established = await steps.establish();
     if (established.status === 'Rejected') return established;
     await steps.resolveNetwork(opts.chainid);
@@ -73,7 +80,7 @@ export async function connectWithChallenge(
     if (answer.status === 'Rejected') return answer;
     const { signed, signature } = answer.args;
     if (!signature?.pubKey?.value || !signature.signature) {
-      throw new GnoConnectRequestError('signer_unavailable', 'This account cannot sign a text (a Ledger account)');
+      throw new GnoConnectRequestError('signer_unavailable', 'The wallet answered without a key or signature');
     }
     return {
       status: 'Approved',
@@ -86,7 +93,8 @@ export async function connectWithChallenge(
       },
     };
   } catch (error) {
-    if (error instanceof GnoConnectRequestError) return refused(error.code);
+    // No account at all is a genuine failure, which rejects the promise (the standard's Answers); the rest are answers.
+    if (error instanceof GnoConnectRequestError && error.code !== 'no_signer') return refused(error.code);
     throw error;
   }
 }

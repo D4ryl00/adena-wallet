@@ -30,7 +30,7 @@ const asyncCodeOf = async (p: Promise<unknown>): Promise<string | undefined> =>
     (e) => (e as { code?: string }).code,
   );
 
-// The Go reference vector (bubblerumble src/session/gnoconnect.test.ts), minus its callback line.
+// The Go reference vector (a GnoConnect producer's payload test), minus its callback line.
 const GPUB =
   'gpub1pgfj7ard9eg82cjtv4u4xetrwqer2dntxyfzxz3pqwy7ynrtu4aum2869uhjarjtsuer63evxrrm3d4sa3w6mkyzefv8yhklkkx';
 const GO_PAYLOAD_INPAGE = [
@@ -47,7 +47,7 @@ const GO_PAYLOAD_INPAGE = [
   'state=ab+c=',
 ].join('\n');
 
-// tm2's Go for the Ed25519 seed 01..20 (bubblerumble prototypes/inpage-sessions vector).
+// tm2's Go for the Ed25519 seed 01..20 (the in-page sessions prototype's vector).
 const ED_SEED = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
 const ED_PUB = '79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664';
 const ED_GPUB =

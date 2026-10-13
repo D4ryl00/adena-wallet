@@ -580,6 +580,32 @@ describe('GnoConnect handshake, end to end', () => {
     );
   });
 
+  // An address compares as an address: bech32 in upper case is the same
+  // identity, as on the challenge path and in gnokey-mobile.
+  it('takes a pin in upper case for the same identity, and carries it in lower case', async () => {
+    teardown.push(
+      bridge(
+        onConnectedWallet((request) => {
+          if (request.type === 'GET_ACCOUNT') {
+            return {
+              status: 'success',
+              type: 'GET_ACCOUNT',
+              data: { address: 'g1abc', chainId: 'dev', publicKey: { value: 'pub' } },
+            };
+          }
+          return { status: 'success', type: 'TRANSACTION_SUCCESS', data: { hash: 'pinned' } };
+        }),
+      ),
+    );
+    const { provider } = await discoverWallet();
+
+    await expect(provider.sendTx({ ...INTENT, signer: 'G1ABC' })).resolves.toEqual({
+      status: 'Approved',
+      args: { hash: 'pinned' },
+    });
+    expect(buildTransactionParams).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), undefined, 'g1abc');
+  });
+
   // Nothing to carry when the request pinned nothing: an absent `signer` must
   // not reach the approval screen as a pin it then fails to satisfy.
   it('carries no signer when the request pinned none', async () => {

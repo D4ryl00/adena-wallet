@@ -50,8 +50,14 @@ describe('validateChallenge', () => {
     ['DEL', { challenge: 'a\u007fb' }],
     ['C1', { challenge: 'a\u0085b' }],
     ['one byte too many', { challenge: 'é'.repeat(MAX_CHALLENGE_BYTES / 2) + 'a' }],
+    ['a lone high surrogate', { challenge: 'a\uD83Db' }],
+    ['a lone low surrogate', { challenge: '\uDE00' }],
   ])('refuses %s as invalid_request', (_name, opts) => {
     expect(() => validateChallenge(opts)).toThrow(expect.objectContaining({ code: 'invalid_request' }));
+  });
+
+  it('takes a surrogate pair (an emoji)', () => {
+    expect(validateChallenge({ challenge: 'gm 😀' })).toBe('gm 😀');
   });
 
   it('counts bytes, not characters', () => {
@@ -63,7 +69,8 @@ describe('validateChallenge', () => {
 describe('gpubFromCompressed', () => {
   it('wraps the key as tm2 prints it: the gpub of test1', () => {
     const gpub = gpubFromCompressed(TEST1_PUB);
-    expect(gpub.startsWith('gpub1')).toBe(true);
+    // as `gnokey list` prints test1's key
+    expect(gpub).toBe('gpub1pgfj7ard9eg82cjtv4u4xetrwqer2dntxyfzxz3pq0skzdkmzu0r9h6gny6eg8c9dc303xrrudee6z4he4y7cs5rnjwmyf40yaj');
     expect(decodeGpub(gpub)).toMatchObject({ type: 'secp256k1', address: TEST1 });
   });
 
@@ -135,7 +142,7 @@ describe('connectWithChallenge', () => {
     expect(await connectWithChallenge(s, { challenge: CHALLENGE }, FEATURES)).toEqual({ status: 'Rejected' });
   });
 
-  it('answers signer_unavailable when the account signs without a key (a Ledger account)', async () => {
+  it('answers signer_unavailable when the wallet answers without a key or signature', async () => {
     const s = steps({ sign: async () => ({ status: 'Approved', args: { signed: { chain_id: 'dev' } } }) });
     expect(await connectWithChallenge(s, { challenge: CHALLENGE }, FEATURES)).toEqual({
       status: 'Rejected',
@@ -147,6 +154,24 @@ describe('connectWithChallenge', () => {
     const s = steps({ resolveNetwork: async () => 'dev', sign: async () => signedFor('test5') });
     const answer = await connectWithChallenge(s, { challenge: CHALLENGE, chainid: 'dev' }, FEATURES);
     expect(answer.status === 'Approved' && answer.args.chainid).toBe('test5');
+  });
+
+  it('refuses a pin that is not a string, before any step', async () => {
+    const s = steps();
+    expect(await connectWithChallenge(s, { challenge: CHALLENGE, signer: 7 as unknown as string }, FEATURES)).toEqual({
+      status: 'Rejected',
+      code: 'invalid_request',
+    });
+    expect(s.calls).toEqual([]);
+  });
+
+  it('rejects the promise when the wallet holds no account (no_signer is a failure, not an answer)', async () => {
+    const s = steps({
+      currentAddress: async () => {
+        throw new GnoConnectRequestError('no_signer', 'No active account');
+      },
+    });
+    await expect(connectWithChallenge(s, { challenge: CHALLENGE }, FEATURES)).rejects.toMatchObject({ code: 'no_signer' });
   });
 
   it('lets a genuine failure through', async () => {

@@ -171,7 +171,9 @@ async function prepare(
 
   const requested = requestedChainId(host, batch);
   const active = await readNetwork(host);
-  const { signer } = batch;
+  // An address compares as an address: bech32 in upper case names the same identity. Lower-cased once here, so the
+  // check below and the approval screen's (an exact compare) agree.
+  const signer = typeof batch.signer === 'string' ? batch.signer.toLowerCase() : batch.signer;
 
   // Before the switch prompt, so a hopeless request costs the user nothing — but
   // only while we are on the chain the pin was read from, since an address is

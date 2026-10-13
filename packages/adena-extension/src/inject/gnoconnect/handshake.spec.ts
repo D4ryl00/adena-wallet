@@ -239,9 +239,49 @@ describe('GnoConnect handshake, end to end', () => {
 
     await expect(provider.connect()).resolves.toEqual({
       status: 'Approved',
-      args: { address: 'g1abc', chainid: 'dev', pubkey: 'pub', features: ['sendtx', 'signtx', 'multi_msg', 'sessions'] },
+      args: { address: 'g1abc', chainid: 'dev', pubkey: 'pub', features: ['sendtx', 'signtx', 'multi_msg', 'sessions', 'challenge'] },
     });
     expect(seenRequests).toEqual(['ADD_ESTABLISH', 'GET_ACCOUNT']);
+  });
+
+  it('connects with a challenge: signs it through SignArbitrary and answers the proof', async () => {
+    const seenRequests: string[] = [];
+    teardown.push(
+      bridge((request) => {
+        seenRequests.push(request.type);
+        if (request.type === 'ADD_ESTABLISH') return { status: 'success', type: 'CONNECTION_SUCCESS', data: {} };
+        if (request.type === 'GET_NETWORK') {
+          return { status: 'success', type: 'GET_NETWORK', data: { chainId: 'dev', rpcUrl: 'http://127.0.0.1:26657' } };
+        }
+        if (request.type === 'GET_ACCOUNT') {
+          return { status: 'success', type: 'GET_ACCOUNT', data: { address: 'g1jg8mtutu9khhfwc4nxmuhcpftf0pajdhfvsqf5' } };
+        }
+        return {
+          status: 'success',
+          type: 'SIGN_ARBITRARY',
+          data: {
+            signed: { chain_id: 'dev' },
+            signature: {
+              pubKey: { typeUrl: '/tm.PubKeySecp256k1', value: 'A+FhNtsXHjLfSJk1lB8FbiL4mGPjc50Kt81J7EKDnJ2y' },
+              signature: 'c2ln',
+            },
+          },
+        };
+      }),
+    );
+    const { provider } = await discoverWallet();
+
+    const answer = await provider.connect({ challenge: 'example.com: prove it', chainid: 'dev' });
+    expect(seenRequests).toEqual(['ADD_ESTABLISH', 'GET_NETWORK', 'GET_ACCOUNT', 'SIGN_ARBITRARY']);
+    expect(answer).toMatchObject({
+      status: 'Approved',
+      args: {
+        address: 'g1jg8mtutu9khhfwc4nxmuhcpftf0pajdhfvsqf5',
+        chainid: 'dev',
+        proof: { signed: { chain_id: 'dev' }, signature: 'c2ln' },
+      },
+    });
+    expect((answer as { args: { pubkey: string } }).args.pubkey).toMatch(/^gpub1/);
   });
 
   it('does not disclose the account when the connection is declined', async () => {
@@ -808,7 +848,7 @@ describe('GnoConnect sessions, end to end', () => {
     expect(answer).toEqual({
       status: 'Approved',
       args: {
-        address: IDENTITY, chainid: ACTIVE_CHAIN_ID, pubkey: 'gpub1identity', features: ['sendtx', 'signtx', 'multi_msg', 'sessions'],
+        address: IDENTITY, chainid: ACTIVE_CHAIN_ID, pubkey: 'gpub1identity', features: ['sendtx', 'signtx', 'multi_msg', 'sessions', 'challenge'],
         session: KEY.address, expiresAt: NOW + 86400, allow: ['vm/exec:gno.land/r/demo/game'], spend: '5000000ugnot', period: 3600, hash: 'h1',
       },
     });
@@ -847,7 +887,7 @@ describe('GnoConnect sessions, end to end', () => {
     await expect(provider.connect(signed('connect', grantFields()))).resolves.toEqual({
       status: 'Approved',
       args: {
-        address: IDENTITY, chainid: ACTIVE_CHAIN_ID, pubkey: 'gpub1identity', features: ['sendtx', 'signtx', 'multi_msg', 'sessions'],
+        address: IDENTITY, chainid: ACTIVE_CHAIN_ID, pubkey: 'gpub1identity', features: ['sendtx', 'signtx', 'multi_msg', 'sessions', 'challenge'],
         session: KEY.address, ...GRANTED,
       },
     });
@@ -950,7 +990,7 @@ describe('GnoConnect sessions, end to end', () => {
     );
     const { provider } = await discoverWallet();
 
-    const plain = { status: 'Approved', args: { address: 'g1abc', chainid: 'dev', pubkey: 'pub', features: ['sendtx', 'signtx', 'multi_msg', 'sessions'] } };
+    const plain = { status: 'Approved', args: { address: 'g1abc', chainid: 'dev', pubkey: 'pub', features: ['sendtx', 'signtx', 'multi_msg', 'sessions', 'challenge'] } };
     await expect(provider.connect()).resolves.toEqual(plain);
     await expect(provider.connect({ allow: ['bank/send'], expires: 3600, chainid: 'dev' })).resolves.toEqual(plain);
     await expect(provider.connect({ allow: ['bank/nope'] })).resolves.toEqual({ status: 'Rejected', code: 'invalid_request' });

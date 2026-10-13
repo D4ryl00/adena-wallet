@@ -96,7 +96,7 @@ export interface SessionDeps {
 /** A session answer: the page's response, or a genuine failure the provider throws. */
 export type SessionAnswer = GnoSessionAnswer;
 
-export const FEATURES = ['sendtx', 'signtx', 'multi_msg', 'sessions'];
+export const FEATURES = ['sendtx', 'signtx', 'multi_msg', 'sessions', 'challenge'];
 
 /**
  * The `(pubkey, state)` pairs accepted in the last 10 minutes. CHECK marks a

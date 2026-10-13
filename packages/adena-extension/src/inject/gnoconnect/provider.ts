@@ -4,6 +4,7 @@ import {
   parseGnoConnectChainId,
 } from '@inject/message/methods/gno-connect';
 
+import { ChallengeSteps, connectWithChallenge, SignedText } from './challenge';
 import { createProviderEvents, Peek, ProviderEvents } from './events';
 import { GnoConnectError, GnoConnectRequestError, toUserResponse } from './response';
 import { validateScopeHints } from './scope-hints';
@@ -25,8 +26,8 @@ import {
   UserResponse,
 } from './types';
 
-/** What a `connect` answer lists: the hosts, the multi-message form, sessions. */
-const FEATURES = ['sendtx', 'signtx', 'multi_msg', 'sessions'];
+/** What a `connect` answer lists: the hosts, the multi-message form, sessions, challenges. */
+const FEATURES = ['sendtx', 'signtx', 'multi_msg', 'sessions', 'challenge'];
 
 /** Both broadcast endpoints carry `hash` (tm2-js-client common.d.ts:154-167). */
 interface BroadcastResultLike {
@@ -359,6 +360,30 @@ async function disconnectFrom(
   return session(host, GNOCONNECT_SESSION_DISCONNECT, data);
 }
 
+/** The wallet's side of `connect` with a challenge: the existing executor calls. */
+function challengeSteps(host: ProviderHost): ChallengeSteps {
+  return {
+    establish: async () => toUserResponse(await host.executor().addEstablish(host.siteName()), () => null),
+    async resolveNetwork(chainid): Promise<string> {
+      const active = await readNetwork(host);
+      if (!chainid || active.chainId === chainid) return active.chainId;
+      return (await switchTo(host, chainid)).chainId;
+    },
+    async currentAddress(): Promise<string> {
+      const response = await host.executor().getAccount();
+      const account = toUserResponse(response, (data) => (data as AccountResultLike)?.address ?? '');
+      if (account.status === 'Rejected' || !account.args) {
+        throw new GnoConnectRequestError('no_signer', 'No active account');
+      }
+      return account.args;
+    },
+    async sign(signer, data): Promise<UserResponse<SignedText>> {
+      const response = await host.executor().signArbitrary({ signer, data });
+      return toUserResponse(response, (d) => d as unknown as SignedText);
+    },
+  };
+}
+
 /**
  * Built entirely from executor calls Adena already implements, so every method
  * funnels through the existing approval screens. `signMessage` is absent:
@@ -389,6 +414,14 @@ export function createGnoConnectProvider(host: ProviderHost = pageHost): GnoConn
     },
 
     async connect(opts) {
+      if (opts?.challenge !== undefined) {
+        const answer = await connectWithChallenge(challengeSteps(host), opts, FEATURES);
+        if (answer.status === 'Approved') {
+          const { address, chainid, pubkey } = answer.args;
+          events.rememberAccount({ address, chainid, pubkey });
+        }
+        return answer;
+      }
       if (opts?.pubkey !== undefined) {
         return connectWithKey(host, events, opts);
       }

@@ -139,3 +139,27 @@ describe('signArbitraryMessage', () => {
     ).rejects.toThrow('requires a chain id');
   });
 });
+
+// gno's tm2/pkg/std/signdata_test.go checks these same signatures with
+// std.VerifySignData: the wallet and the Go verifier agree byte for byte.
+describe('agreement with gno sign-data', () => {
+  it.each([
+    ['ascii', 'hello', '8hpjD4/il8opyBcDRI3Uax7RawxfahpY7agfp3fbv8V0OI1lPGBmIJ7epkRjGfFbyl57udqJHErR3q79qmwEZg=='],
+    [
+      'non-ascii',
+      'Sign in to Gnoland · 서명 · 🔑',
+      'mHvGbtC4bLtA55GZao2b6qBKGh8cNnAgGQHaNSIbdkEAWT83TbuBbeL9dF4tc2lODsHirfx7aW/PGtjg5Z+nfg==',
+    ],
+  ])('%s: the signature of gno\'s vector', async (_name, data, expected) => {
+    const keyring = await HDWalletKeyring.fromMnemonic(MNEMONIC);
+    const publicKey = await keyring.getPublicKey(0);
+    const { signature } = await signArbitraryMessage({
+      keyring,
+      publicKey,
+      chainId: CHAIN_ID,
+      signer: SIGNER,
+      data,
+    });
+    expect(Buffer.from(signature).toString('base64')).toBe(expected);
+  });
+});

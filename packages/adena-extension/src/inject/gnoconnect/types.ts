@@ -93,6 +93,9 @@ export interface GnoAccount {
   address: string;
   chainid: string;
   pubkey: string | null;
+  features?: string[];
+  /** With a challenge: what the identity signed (Adena's SignArbitrary `signed`), and the signature, base64. */
+  proof?: { signed: Record<string, unknown>; signature: string };
 }
 
 /** The launch link's `connect` parameters, as fields. `callback` has no place here. */
@@ -112,6 +115,8 @@ export interface GnoConnectOptions {
   iat?: number;
   sig?: string;
   oldsig?: string;
+  /** A text for the identity to sign, proving it holds the address; never with `pubkey`. */
+  challenge?: string;
 }
 
 export interface GnoSessionGrant {
